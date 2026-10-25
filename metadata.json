@@ -1,0 +1,6 @@
+{
+  "name": "Arcade Welcome Trip",
+  "description": "High-fidelity event operations, 60FPS retro arcade engine, live reactive display, client-side PNG credential generator, and Zero-Standing Data WebCrypto vault.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
