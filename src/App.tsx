@@ -20,7 +20,12 @@ import {
   ShieldCheck,
   Smartphone,
   Gift,
+  LogIn,
+  LogOut,
+  Cloud,
 } from 'lucide-react';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
 import {
   AdminTab,
   AppRoleMode,
@@ -37,6 +42,22 @@ import {
   encryptBackupWithPassword,
   retroAudio,
 } from './services/soundAndCrypto';
+import {
+  ADMIN_EMAIL,
+  assignPrizeInFirestoreAdmin,
+  auth,
+  createAttendeeInFirestore,
+  db,
+  deleteAttendeeFromFirestoreAdmin,
+  deletePrizeFromFirestore,
+  handleFirestoreError,
+  loginWithGoogle,
+  logoutFirebase,
+  OperationType,
+  saveEventConfigToFirestore,
+  savePrizeToFirestore,
+  updateAttendeeScoreInFirestore,
+} from './firebase';
 import { ArcadeGameModule } from './components/ArcadeGameModule';
 import { CertificateAndPassModule } from './components/CertificateAndPassModule';
 import { AdminTombolaModule } from './components/AdminTombolaModule';
@@ -61,7 +82,12 @@ const ROLE_OPTIONS = [
 ];
 
 export default function App() {
-  // Separación estricta: Modo Asistente (Mobile-First) vs Modo Admin (Organizador)
+  // Estado de Autenticación Firebase
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [authError, setAuthError] = useState<string>('');
+
+  // Modo Asistente (Mobile-First) vs Modo Admin (Organizador)
   const [roleMode, setRoleMode] = useState<AppRoleMode>('attendee');
   const [attendeeTab, setAttendeeTab] = useState<AttendeeTab>('register');
   const [adminTab, setAdminTab] = useState<AdminTab>('tombola');
@@ -69,7 +95,7 @@ export default function App() {
   const [audioEnabled, setAudioEnabled] = useState<boolean>(true);
   const [config, setConfig] = useState<EventConfig>(DEFAULT_EVENT_CONFIG);
 
-  // Lista real de asistentes registrados en la sesión
+  // Lista real de asistentes (sincronizada con Firestore cuando está autenticado)
   const [attendees, setAttendees] = useState<Attendee[]>([]);
   const [currentAttendeeId, setCurrentAttendeeId] = useState<string>('');
 
@@ -92,6 +118,124 @@ export default function App() {
   const [unlockError, setUnlockError] = useState<string>('');
 
   const wordCloudCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const seededDefaultPrizesRef = useRef<boolean>(false);
+
+  const isFirebaseAdmin =
+    Boolean(firebaseUser?.emailVerified) &&
+    firebaseUser?.email === ADMIN_EMAIL;
+
+  // 1. Escuchar estado de Firebase Auth
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+      setAuthReady(true);
+      if (user?.displayName && !nameInput) {
+        setNameInput(user.displayName);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // 2. Suscripciones en tiempo real a Firestore (solo cuando authReady && firebaseUser)
+  useEffect(() => {
+    if (!authReady || !firebaseUser) return;
+
+    // 2a. Escuchar eventConfig/current
+    const configDocRef = doc(db, 'eventConfig', 'current');
+    const unsubConfig = onSnapshot(
+      configDocRef,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          setConfig((prev) => ({
+            ...prev,
+            eventName: data.eventName || prev.eventName,
+            subtitle: data.subtitle ?? prev.subtitle,
+            venue: data.venue || prev.venue,
+            gameDurationSeconds:
+              typeof data.gameDurationSeconds === 'number'
+                ? data.gameDurationSeconds
+                : prev.gameDurationSeconds,
+          }));
+        }
+      },
+      (err) => handleFirestoreError(err, OperationType.GET, 'eventConfig/current')
+    );
+
+    // 2b. Escuchar colección prizes (con filtro stock >= 0 acorde a firestore.rules)
+    const prizesQuery = query(
+      collection(db, 'prizes'),
+      where('stock', '>=', 0)
+    );
+    const unsubPrizes = onSnapshot(
+      prizesQuery,
+      (snap) => {
+        if (snap.empty) {
+          // Si el admin entra por primera vez y no hay premios en Firestore, sembrar los premios base
+          if (
+            firebaseUser.email === ADMIN_EMAIL &&
+            !seededDefaultPrizesRef.current
+          ) {
+            seededDefaultPrizesRef.current = true;
+            DEFAULT_EVENT_CONFIG.prizes.forEach((p) => {
+              savePrizeToFirestore(p).catch(() => {});
+            });
+          }
+          return;
+        }
+        const loadedPrizes: PrizeTier[] = snap.docs.map((d) => {
+          const data = d.data();
+          return {
+            id: d.id,
+            label: String(data.label || 'Premio'),
+            stock: Number(data.stock ?? 0),
+            color: String(data.color || '#06B6D4'),
+          };
+        });
+        setConfig((prev) => ({ ...prev, prizes: loadedPrizes }));
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'prizes')
+    );
+
+    // 2c. Escuchar colección attendees (con filtro isPublic == true acorde a firestore.rules)
+    const attendeesQuery = query(
+      collection(db, 'attendees'),
+      where('isPublic', '==', true)
+    );
+    const unsubAttendees = onSnapshot(
+      attendeesQuery,
+      (snap) => {
+        const list: Attendee[] = snap.docs.map((d) => {
+          const data = d.data();
+          return {
+            id: d.id,
+            name: String(data.name || 'Participante'),
+            role: String(data.role || 'Invitado General'),
+            organization: String(data.organization || ''),
+            wordForCloud: String(data.wordForCloud || 'Bienvenida'),
+            checkedInAt: String(data.checkedInAt || ''),
+            arcadeScore: Number(data.arcadeScore ?? 0),
+            maxCombo: Number(data.maxCombo ?? 1),
+            playedArcade: Boolean(data.playedArcade),
+            prizeWon: data.prizeWon ? String(data.prizeWon) : undefined,
+          };
+        });
+        setAttendees(list);
+        setCurrentAttendeeId((prevId) => {
+          if (prevId && list.some((a) => a.id === prevId)) return prevId;
+          const ownDoc = list.find((a) => a.id === `att_${firebaseUser.uid}`);
+          return ownDoc ? ownDoc.id : list[0]?.id || '';
+        });
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'attendees')
+    );
+
+    return () => {
+      unsubConfig();
+      unsubPrizes();
+      unsubAttendees();
+    };
+  }, [authReady, firebaseUser]);
 
   const currentPlayer =
     attendees.find((a) => a.id === currentAttendeeId) || attendees[0] || null;
@@ -103,8 +247,21 @@ export default function App() {
     if (next) retroAudio.playArcadePickup(false);
   };
 
-  // Paso 1 (Asistente): Registrarse y pasar al juego mobile-first
-  const handleCheckInSubmit = (e: React.FormEvent) => {
+  const handleGoogleSignIn = async () => {
+    try {
+      setAuthError('');
+      await loginWithGoogle();
+    } catch (err) {
+      setAuthError(
+        err instanceof Error
+          ? err.message
+          : 'No se pudo iniciar sesión con Google.'
+      );
+    }
+  };
+
+  // Paso 1 (Asistente): Registrarse y guardar en Firestore (si está conectado) + memoria
+  const handleCheckInSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = nameInput.trim();
     if (!cleanName) {
@@ -117,46 +274,72 @@ export default function App() {
       minute: '2-digit',
     });
 
+    const attendeeId = firebaseUser
+      ? `att_${firebaseUser.uid}`
+      : `user_${Date.now()}`;
+
     const newPerson: Attendee = {
-      id: `user-${Date.now()}`,
-      name: cleanName,
-      role: roleInput,
-      organization: orgInput.trim(),
-      wordForCloud: wordInput.trim() || 'Bienvenida',
+      id: attendeeId,
+      name: cleanName.slice(0, 100),
+      role: roleInput.slice(0, 80),
+      organization: orgInput.trim().slice(0, 100),
+      wordForCloud: (wordInput.trim() || 'Bienvenida').slice(0, 60),
       checkedInAt: nowTime,
       arcadeScore: 0,
       maxCombo: 1,
       playedArcade: false,
     };
 
-    setAttendees((prev) => [newPerson, ...prev]);
+    if (firebaseUser) {
+      await createAttendeeInFirestore(newPerson, firebaseUser.uid);
+    } else {
+      setAttendees((prev) => [
+        newPerson,
+        ...prev.filter((a) => a.id !== newPerson.id),
+      ]);
+    }
+
     setCurrentAttendeeId(newPerson.id);
-    setNameInput('');
-    setOrgInput('');
     setFormError('');
     retroAudio.playCheckInSuccess();
     setAttendeeTab('game');
   };
 
-  // Paso 2 (Asistente): Guardar puntaje del juego (sin girar ruleta)
-  const handleSavePlayerScore = (score: number, maxCombo: number) => {
+  // Paso 2 (Asistente): Guardar puntaje del juego en Firestore + memoria
+  const handleSavePlayerScore = async (score: number, maxCombo: number) => {
     if (!currentPlayer) return;
+    const bestScore = Math.max(currentPlayer.arcadeScore, score);
+    const bestCombo = Math.max(currentPlayer.maxCombo, maxCombo);
+
     setAttendees((prev) =>
       prev.map((a) =>
         a.id === currentPlayer.id
           ? {
               ...a,
-              arcadeScore: Math.max(a.arcadeScore, score),
-              maxCombo: Math.max(a.maxCombo, maxCombo),
+              arcadeScore: bestScore,
+              maxCombo: bestCombo,
               playedArcade: true,
             }
           : a
       )
     );
+
+    if (firebaseUser) {
+      await updateAttendeeScoreInFirestore(
+        currentPlayer.id,
+        bestScore,
+        bestCombo
+      );
+    }
   };
 
-  // Exclusivo Admin: Girar la Tómbola y asignar el premio al asistente
-  const handleAdminAssignPrize = (attendeeId: string, prize: PrizeTier) => {
+  // Exclusivo Admin: Girar la Tómbola y guardar el premio asignado en Firestore
+  const handleAdminAssignPrize = async (
+    attendeeId: string,
+    prize: PrizeTier
+  ) => {
+    const nextStock = Math.max(0, prize.stock - 1);
+
     setAttendees((prev) =>
       prev.map((a) =>
         a.id === attendeeId
@@ -171,9 +354,14 @@ export default function App() {
     setConfig((prev) => ({
       ...prev,
       prizes: prev.prizes.map((p) =>
-        p.id === prize.id ? { ...p, stock: Math.max(0, p.stock - 1) } : p
+        p.id === prize.id ? { ...p, stock: nextStock } : p
       ),
     }));
+
+    if (firebaseUser && isFirebaseAdmin) {
+      await assignPrizeInFirestoreAdmin(attendeeId, prize.label);
+      await savePrizeToFirestore({ ...prize, stock: nextStock });
+    }
   };
 
   // Nube de palabras real
@@ -217,7 +405,14 @@ export default function App() {
 
     const cx = W / 2;
     const cy = H / 2;
-    const colors = ['#06B6D4', '#F59E0B', '#10B981', '#38BDF8', '#F8FAFC', '#EC4899'];
+    const colors = [
+      '#06B6D4',
+      '#F59E0B',
+      '#10B981',
+      '#38BDF8',
+      '#F8FAFC',
+      '#EC4899',
+    ];
 
     realWords.forEach((item, idx) => {
       const size = Math.min(42, 20 + item.count * 6);
@@ -231,15 +426,21 @@ export default function App() {
       } else {
         const angle = idx * 2.4;
         const rad = 45 + idx * 28;
-        const x = Math.max(90, Math.min(W - 90, cx + Math.cos(angle) * rad * 1.3));
-        const y = Math.max(36, Math.min(H - 36, cy + Math.sin(angle) * rad * 0.75));
+        const x = Math.max(
+          90,
+          Math.min(W - 90, cx + Math.cos(angle) * rad * 1.3)
+        );
+        const y = Math.max(
+          36,
+          Math.min(H - 36, cy + Math.sin(angle) * rad * 0.75)
+        );
         ctx.fillText(`${item.word} (${item.count})`, x, y);
       }
     });
   }, [roleMode, adminTab, realWords]);
 
-  // Importar CSV en Admin
-  const handleImportCsvGuests = () => {
+  // Importar CSV en Admin (guarda en Firestore si es Admin autenticado)
+  const handleImportCsvGuests = async () => {
     const lines = csvImportText
       .split(/\r?\n/)
       .map((l) => l.trim())
@@ -254,11 +455,11 @@ export default function App() {
     const imported: Attendee[] = lines.map((line, i) => {
       const parts = line.split(',').map((p) => p.trim());
       return {
-        id: `import-${Date.now()}-${i}`,
-        name: parts[0] || `Invitado ${i + 1}`,
-        role: parts[1] || 'Invitado General',
-        organization: parts[2] || '',
-        wordForCloud: parts[3] || 'Comunidad',
+        id: `import_${Date.now()}_${i}`,
+        name: (parts[0] || `Invitado ${i + 1}`).slice(0, 100),
+        role: (parts[1] || 'Invitado General').slice(0, 80),
+        organization: (parts[2] || '').slice(0, 100),
+        wordForCloud: (parts[3] || 'Comunidad').slice(0, 60),
         checkedInAt: nowTime,
         arcadeScore: 0,
         maxCombo: 1,
@@ -266,7 +467,14 @@ export default function App() {
       };
     });
 
-    setAttendees((prev) => [...imported, ...prev]);
+    if (firebaseUser) {
+      for (const att of imported) {
+        await createAttendeeInFirestore(att, firebaseUser.uid);
+      }
+    } else {
+      setAttendees((prev) => [...imported, ...prev]);
+    }
+
     if (!currentAttendeeId && imported[0]) {
       setCurrentAttendeeId(imported[0].id);
     }
@@ -309,9 +517,21 @@ export default function App() {
       setUnlockError('');
       retroAudio.playCheckInSuccess();
     } catch {
-      setUnlockError('Contraseña incorrecta. No se pudo desbloquear el respaldo.');
+      setUnlockError(
+        'Contraseña incorrecta. No se pudo desbloquear el respaldo.'
+      );
       setUnlockedPreview('');
     }
+  };
+
+  const handlePurgeAllAttendees = async () => {
+    if (firebaseUser && isFirebaseAdmin) {
+      for (const att of attendees) {
+        await deleteAttendeeFromFirestoreAdmin(att.id);
+      }
+    }
+    setAttendees([]);
+    setCurrentAttendeeId('');
   };
 
   const sortedByScore = [...attendees].sort(
@@ -320,7 +540,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#090D16] text-slate-100 pb-20 md:pb-6">
-      {/* Barra Superior (3 Zonas) con Conmutador Claro entre Modo Asistente y Panel Admin */}
+      {/* Barra Superior (3 Zonas) */}
       <header className="flex items-center justify-between gap-4 px-4 sm:px-6 py-3.5 border-b border-slate-800 bg-slate-950/90 backdrop-blur-md sticky top-0 z-30">
         {/* Zona 1: Nombre del Evento */}
         <a
@@ -335,7 +555,7 @@ export default function App() {
           {config.eventName}
         </a>
 
-        {/* Zona 2: Navegación contextual según el modo actual (Asistente vs Admin) */}
+        {/* Zona 2: Navegación contextual (Asistente vs Admin) */}
         {roleMode === 'attendee' ? (
           <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-300">
             <button
@@ -410,7 +630,7 @@ export default function App() {
           </nav>
         )}
 
-        {/* Zona 3: Botón de Cambio de Rol (Vista Asistente <-> Panel Admin) + Sonido */}
+        {/* Zona 3: Conmutador Asistente/Admin + Sonido */}
         <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
@@ -423,9 +643,6 @@ export default function App() {
             ) : (
               <VolumeX className="w-4 h-4 text-slate-500" />
             )}
-            <span className="hidden sm:inline">
-              {audioEnabled ? 'Sonido' : 'Silencio'}
-            </span>
           </button>
 
           <button
@@ -442,7 +659,7 @@ export default function App() {
             {roleMode === 'admin' ? (
               <>
                 <Smartphone className="w-4 h-4" />
-                <span>Volver a Vista Asistente</span>
+                <span>Vista Asistente</span>
               </>
             ) : (
               <>
@@ -454,13 +671,67 @@ export default function App() {
         </div>
       </header>
 
-      {/* Sub-barra cuando está en Modo Admin para cambiar entre Tómbola, Pantalla en Vivo y Ajustes en móvil */}
+      {/* Barra de Estado Firebase Cloud Sync */}
+      <div className="border-b border-slate-800/80 bg-slate-900/50 px-4 sm:px-6 py-2">
+        <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2 text-slate-300">
+            <Cloud
+              className={`w-4 h-4 ${
+                firebaseUser ? 'text-emerald-400' : 'text-slate-500'
+              }`}
+            />
+            {firebaseUser ? (
+              <span>
+                Sincronizado con Firebase Firestore como{' '}
+                <strong className="text-white">{firebaseUser.email}</strong>
+                {isFirebaseAdmin ? ' · Permisos Admin Activos' : ''}
+              </span>
+            ) : (
+              <span>
+                Modo Local · Inicia sesión con Google para sincronizar en tiempo real con Firebase Firestore
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            {authError && (
+              <span className="text-rose-400 text-[11px]">{authError}</span>
+            )}
+            {firebaseUser ? (
+              <button
+                type="button"
+                onClick={logoutFirebase}
+                className="px-3 py-1 bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-lg flex items-center gap-1.5 cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Salir</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleGoogleSignIn}
+                className="px-3 py-1 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                <span>Conectar con Google (Firebase)</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Sub-barra cuando está en Modo Admin */}
       {roleMode === 'admin' && (
         <div className="border-b border-amber-500/30 bg-amber-950/20 px-4 py-2.5">
           <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
               <ShieldCheck className="w-4 h-4" />
-              <span>MODO ADMINISTRADOR DEL EVENTO</span>
+              <span>
+                MODO ADMINISTRADOR{' '}
+                {isFirebaseAdmin
+                  ? '(AUTENTICADO EN FIREBASE)'
+                  : '(INICIA SESIÓN CON TU CUENTA ADMIN PARA GUARDAR EN LA NUBE)'}
+              </span>
             </span>
 
             <div className="flex items-center gap-1.5 overflow-x-auto">
@@ -659,7 +930,7 @@ export default function App() {
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-slate-900/90 border border-slate-800 rounded-2xl p-5">
                   <div>
                     <div className="text-xs font-semibold text-amber-400">
-                      MODO PROYECTOR · ACTUALIZACIÓN EN TIEMPO REAL
+                      MODO PROYECTOR · FIREBASE REAL-TIME
                     </div>
                     <h2 className="text-2xl font-bold text-white mt-0.5">
                       {config.eventName} — Pantalla en Vivo
@@ -692,7 +963,7 @@ export default function App() {
                           Esperando a los primeros jugadores...
                         </p>
                         <p className="text-xs text-slate-400">
-                          A medida que los asistentes se registren y jueguen desde la Vista Asistente, aparecerán aquí.
+                          A medida que los asistentes se registren y jueguen, aparecerán aquí en tiempo real.
                         </p>
                       </div>
                     ) : (
@@ -712,7 +983,9 @@ export default function App() {
                                 </div>
                                 <div className="text-xs text-slate-400 truncate">
                                   {att.role}
-                                  {att.prizeWon ? ` · Premio: ${att.prizeWon}` : ''}
+                                  {att.prizeWon
+                                    ? ` · Premio: ${att.prizeWon}`
+                                    : ''}
                                 </div>
                               </div>
                             </div>
@@ -752,10 +1025,10 @@ export default function App() {
               <div className="space-y-6">
                 <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6">
                   <h2 className="text-2xl font-bold text-white">
-                    Configuración del Evento, Invitados CSV y Respaldo Cifrado
+                    Configuración del Evento (Firestore), CSV y Respaldo Cifrado
                   </h2>
                   <p className="text-sm text-slate-400 mt-1">
-                    Personaliza el evento, administra el stock de premios de la tómbola, importa invitados o exporta el cierre cifrado AES-GCM.
+                    Personaliza el evento en tiempo real, administra el stock de premios de la tómbola, importa invitados o exporta el cierre cifrado AES-GCM.
                   </p>
                 </div>
 
@@ -776,7 +1049,10 @@ export default function App() {
                             type="text"
                             value={config.eventName}
                             onChange={(e) =>
-                              setConfig({ ...config, eventName: e.target.value })
+                              setConfig({
+                                ...config,
+                                eventName: e.target.value,
+                              })
                             }
                             className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white"
                           />
@@ -809,13 +1085,27 @@ export default function App() {
                               onChange={(e) =>
                                 setConfig({
                                   ...config,
-                                  gameDurationSeconds: Number(e.target.value) || 30,
+                                  gameDurationSeconds:
+                                    Number(e.target.value) || 30,
                                 })
                               }
                               className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white"
                             />
                           </div>
                         </div>
+
+                        {isFirebaseAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              saveEventConfigToFirestore(config);
+                              retroAudio.playCheckInSuccess();
+                            }}
+                            className="w-full py-2.5 px-4 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs rounded-xl transition-colors cursor-pointer"
+                          >
+                            Guardar Cambios en Firebase Firestore
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -845,14 +1135,17 @@ export default function App() {
                             {config.prizes.length > 2 && (
                               <button
                                 type="button"
-                                onClick={() =>
+                                onClick={async () => {
                                   setConfig({
                                     ...config,
                                     prizes: config.prizes.filter(
                                       (item) => item.id !== p.id
                                     ),
-                                  })
-                                }
+                                  });
+                                  if (isFirebaseAdmin) {
+                                    await deletePrizeFromFirestore(p.id);
+                                  }
+                                }}
                                 className="text-rose-400 hover:text-rose-300 cursor-pointer"
                               >
                                 <Trash2 className="w-4 h-4" />
@@ -881,7 +1174,7 @@ export default function App() {
                         />
                         <button
                           type="button"
-                          onClick={() => {
+                          onClick={async () => {
                             if (!newPrizeLabel.trim()) return;
                             const palette = [
                               '#06B6D4',
@@ -891,8 +1184,8 @@ export default function App() {
                               '#EC4899',
                             ];
                             const nextPrize: PrizeTier = {
-                              id: `prize-${Date.now()}`,
-                              label: newPrizeLabel.trim(),
+                              id: `prize_${Date.now()}`,
+                              label: newPrizeLabel.trim().slice(0, 80),
                               stock: newPrizeStock,
                               color:
                                 palette[config.prizes.length % palette.length],
@@ -902,6 +1195,9 @@ export default function App() {
                               prizes: [...config.prizes, nextPrize],
                             });
                             setNewPrizeLabel('');
+                            if (isFirebaseAdmin) {
+                              await savePrizeToFirestore(nextPrize);
+                            }
                           }}
                           className="px-3.5 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs rounded-xl flex items-center gap-1 cursor-pointer"
                         >
@@ -948,7 +1244,7 @@ export default function App() {
                         4. Respaldo Cifrado AES-GCM y Limpieza
                       </h3>
                       <p className="text-xs text-slate-400">
-                        Cifra los datos de los {attendees.length} participantes con tu contraseña antes de limpiar la memoria.
+                        Cifra los datos de los {attendees.length} participantes con tu contraseña antes de limpiar la base de datos.
                       </p>
 
                       <div className="flex items-center gap-2">
@@ -1038,14 +1334,13 @@ export default function App() {
                       {attendees.length > 0 && (
                         <button
                           type="button"
-                          onClick={() => {
-                            setAttendees([]);
-                            setCurrentAttendeeId('');
-                          }}
+                          onClick={handlePurgeAllAttendees}
                           className="w-full py-2.5 px-4 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 font-semibold text-xs rounded-xl border border-rose-500/40 flex items-center justify-center gap-2 cursor-pointer"
                         >
                           <Trash2 className="w-4 h-4" />
-                          <span>Borrar Datos de la Sesión en Memoria</span>
+                          <span>
+                            Borrar Todos los Participantes (Firestore y Memoria)
+                          </span>
                         </button>
                       )}
                     </div>
@@ -1057,7 +1352,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Barra Inferior Fija Mobile-First para el Asistente (Ergonomía Zona del Pulgar) */}
+      {/* Barra Inferior Fija Mobile-First para el Asistente */}
       {roleMode === 'attendee' && (
         <nav
           aria-label="Navegación móvil de asistente"

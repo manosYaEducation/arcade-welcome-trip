@@ -1,0 +1,196 @@
+{
+  "entities": {
+    "EventConfig": {
+      "title": "EventConfig",
+      "description": "Global event parameters managed by the event administrator.",
+      "type": "object",
+      "properties": {
+        "eventName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "description": "Display name of the event."
+        },
+        "subtitle": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 200,
+          "description": "Optional subtitle of the event."
+        },
+        "venue": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Venue or room name."
+        },
+        "gameDurationSeconds": {
+          "type": "number",
+          "description": "Duration of the arcade game round in seconds (10 to 120)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last configuration update."
+        }
+      },
+      "required": ["eventName", "subtitle", "venue", "gameDurationSeconds", "updatedAt"]
+    },
+    "Prize": {
+      "title": "Prize",
+      "description": "Prize item in the Admin Tombola wheel.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Name of the prize."
+        },
+        "stock": {
+          "type": "number",
+          "description": "Remaining stock of the prize (>= 0)."
+        },
+        "color": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 20,
+          "description": "Hex color for the wheel sector."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last prize update."
+        }
+      },
+      "required": ["label", "stock", "color", "updatedAt"]
+    },
+    "Attendee": {
+      "title": "Attendee",
+      "description": "Registered event attendee, their arcade score, and any prize awarded by the admin.",
+      "type": "object",
+      "properties": {
+        "authorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the user who created the registration."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Full name of the attendee."
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Profile or area of the attendee."
+        },
+        "organization": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 100,
+          "description": "Company or institution of the attendee."
+        },
+        "wordForCloud": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "Single motivation word for the live word cloud."
+        },
+        "checkedInAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "Human-readable check-in time."
+        },
+        "arcadeScore": {
+          "type": "number",
+          "description": "Best score achieved in the mobile-first arcade game."
+        },
+        "maxCombo": {
+          "type": "number",
+          "description": "Highest combo multiplier achieved."
+        },
+        "playedArcade": {
+          "type": "boolean",
+          "description": "Whether the attendee has completed at least one arcade round."
+        },
+        "prizeWon": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 100,
+          "description": "Prize assigned exclusively by the Admin via the Tombola wheel (empty string if none)."
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Flag indicating the attendee record is visible on the event leaderboard."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last update."
+        }
+      },
+      "required": [
+        "authorUid",
+        "name",
+        "role",
+        "organization",
+        "wordForCloud",
+        "checkedInAt",
+        "arcadeScore",
+        "maxCombo",
+        "playedArcade",
+        "prizeWon",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Trusted administrator registry.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 120,
+          "description": "Verified email of the administrator."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp."
+        }
+      },
+      "required": ["email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/eventConfig/{configId}": {
+      "schema": { "$ref": "#/entities/EventConfig" },
+      "description": "Stores the global event settings (configId = 'current')."
+    },
+    "/prizes/{prizeId}": {
+      "schema": { "$ref": "#/entities/Prize" },
+      "description": "Stores the prize tiers and stock for the Admin Tombola."
+    },
+    "/attendees/{attendeeId}": {
+      "schema": { "$ref": "#/entities/Attendee" },
+      "description": "Stores registered attendees, their arcade scores, and admin-assigned prizes."
+    },
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Stores additional admin UIDs."
+    }
+  }
+}

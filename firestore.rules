@@ -1,0 +1,162 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'asus.alphadocere@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // 3. Validation Blueprints (Synced with firebase-blueprint.json)
+    function isValidEventConfig(data) {
+      return data.keys().hasAll(['eventName', 'subtitle', 'venue', 'gameDurationSeconds', 'updatedAt']) &&
+        data.keys().hasOnly(['eventName', 'subtitle', 'venue', 'gameDurationSeconds', 'updatedAt']) &&
+        data.eventName is string && data.eventName.size() >= 2 && data.eventName.size() <= 120 &&
+        data.subtitle is string && data.subtitle.size() <= 200 &&
+        data.venue is string && data.venue.size() >= 1 && data.venue.size() <= 120 &&
+        data.gameDurationSeconds is number && data.gameDurationSeconds >= 10 && data.gameDurationSeconds <= 120 &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidPrize(data) {
+      return data.keys().hasAll(['label', 'stock', 'color', 'updatedAt']) &&
+        data.keys().hasOnly(['label', 'stock', 'color', 'updatedAt']) &&
+        data.label is string && data.label.size() >= 1 && data.label.size() <= 80 &&
+        data.stock is number && data.stock >= 0 && data.stock <= 100000 &&
+        data.color is string && data.color.size() >= 4 && data.color.size() <= 20 &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidAttendee(data) {
+      return data.keys().hasAll([
+          'authorUid',
+          'name',
+          'role',
+          'organization',
+          'wordForCloud',
+          'checkedInAt',
+          'arcadeScore',
+          'maxCombo',
+          'playedArcade',
+          'prizeWon',
+          'isPublic',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'authorUid',
+          'name',
+          'role',
+          'organization',
+          'wordForCloud',
+          'checkedInAt',
+          'arcadeScore',
+          'maxCombo',
+          'playedArcade',
+          'prizeWon',
+          'isPublic',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
+        data.authorUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.role is string && data.role.size() >= 1 && data.role.size() <= 80 &&
+        data.organization is string && data.organization.size() <= 100 &&
+        data.wordForCloud is string && data.wordForCloud.size() >= 1 && data.wordForCloud.size() <= 60 &&
+        data.checkedInAt is string && data.checkedInAt.size() >= 1 && data.checkedInAt.size() <= 40 &&
+        data.arcadeScore is number && data.arcadeScore >= 0 && data.arcadeScore <= 1000000 &&
+        data.maxCombo is number && data.maxCombo >= 1 && data.maxCombo <= 10 &&
+        data.playedArcade is bool &&
+        data.prizeWon is string && data.prizeWon.size() <= 100 &&
+        data.isPublic is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidAdminUser(data) {
+      return data.keys().hasAll(['email', 'createdAt']) &&
+        data.keys().hasOnly(['email', 'createdAt']) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+        data.createdAt is timestamp && data.createdAt == request.time;
+    }
+
+    // 4. Collection Rules
+    match /eventConfig/{configId} {
+      allow get: if isSignedIn() && isValidId(configId);
+      allow list: if isSignedIn() && resource.data.gameDurationSeconds >= 10;
+      allow create, update: if isSignedIn() && isValidId(configId) && isValidEventConfig(incoming()) && isAdmin();
+      allow delete: if isSignedIn() && isValidId(configId) && isAdmin();
+    }
+
+    match /prizes/{prizeId} {
+      allow get: if isSignedIn() && isValidId(prizeId);
+      allow list: if isSignedIn() && resource.data.stock >= 0;
+      allow create, update: if isSignedIn() && isValidId(prizeId) && isValidPrize(incoming()) && isAdmin();
+      allow delete: if isSignedIn() && isValidId(prizeId) && isAdmin();
+    }
+
+    match /attendees/{attendeeId} {
+      allow get: if isSignedIn() && isValidId(attendeeId) && (existing().isPublic == true || existing().authorUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.isPublic == true || resource.data.authorUid == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+        isValidId(attendeeId) &&
+        isValidAttendee(incoming()) &&
+        incoming().authorUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        (incoming().prizeWon == '' || isAdmin());
+
+      allow update: if isSignedIn() &&
+        isValidId(attendeeId) &&
+        isValidAttendee(incoming()) &&
+        incoming().authorUid == existing().authorUid &&
+        incoming().createdAt == existing().createdAt && (
+          // Action 1: Attendee updates their own arcade score (cannot touch prizeWon)
+          (
+            existing().authorUid == request.auth.uid &&
+            incoming().prizeWon == existing().prizeWon &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['arcadeScore', 'maxCombo', 'playedArcade', 'updatedAt'])
+          ) ||
+          // Action 2: Admin assigns prize from Tombola or updates attendee
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['prizeWon', 'arcadeScore', 'maxCombo', 'playedArcade', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isSignedIn() && isValidId(attendeeId) && isAdmin();
+    }
+
+    match /admins/{adminUid} {
+      allow get: if isSignedIn() && isValidId(adminUid) && (request.auth.uid == adminUid || isAdmin());
+      allow list: if false;
+      allow create: if isSignedIn() && isValidId(adminUid) && isValidAdminUser(incoming()) && isAdmin();
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(adminUid) && isAdmin();
+    }
+  }
+}
