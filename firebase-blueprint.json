@@ -2,7 +2,7 @@
   "entities": {
     "EventConfig": {
       "title": "EventConfig",
-      "description": "Global event parameters managed by the event administrator.",
+      "description": "Global event parameters and credential customization settings managed by the administrator.",
       "type": "object",
       "properties": {
         "eventName": {
@@ -27,13 +27,47 @@
           "type": "number",
           "description": "Duration of the arcade game round in seconds (10 to 120)."
         },
+        "badgeTitle": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Custom header title displayed on printed/PDF credentials."
+        },
+        "badgeAccentColor": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 20,
+          "description": "Custom hex accent color for credentials and diplomas."
+        },
+        "badgeFooterNote": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 160,
+          "description": "Custom footer message displayed on credentials and diplomas."
+        },
+        "whatsappTemplate": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 500,
+          "description": "Custom message template used when sending credentials via WhatsApp."
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time",
           "description": "Server timestamp of the last configuration update."
         }
       },
-      "required": ["eventName", "subtitle", "venue", "gameDurationSeconds", "updatedAt"]
+      "required": [
+        "eventName",
+        "subtitle",
+        "venue",
+        "gameDurationSeconds",
+        "badgeTitle",
+        "badgeAccentColor",
+        "badgeFooterNote",
+        "whatsappTemplate",
+        "updatedAt"
+      ]
     },
     "Prize": {
       "title": "Prize",
@@ -66,7 +100,7 @@
     },
     "Attendee": {
       "title": "Attendee",
-      "description": "Registered event attendee, their arcade score, and any prize awarded by the admin.",
+      "description": "Public event attendee record (PII-free) for leaderboard, arcade score, and admin-assigned prize.",
       "type": "object",
       "properties": {
         "authorUid": {
@@ -122,7 +156,7 @@
           "type": "string",
           "minLength": 0,
           "maxLength": 100,
-          "description": "Prize assigned exclusively by the Admin via the Tombola wheel (empty string if none)."
+          "description": "Prize assigned exclusively by the Admin via the Tombola wheel."
         },
         "isPublic": {
           "type": "boolean",
@@ -155,6 +189,97 @@
         "updatedAt"
       ]
     },
+    "AttendeeContact": {
+      "title": "AttendeeContact",
+      "description": "Isolated PII contact record storing the optional WhatsApp phone number, readable only by the owner or Admin.",
+      "type": "object",
+      "properties": {
+        "authorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the owner."
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 30,
+          "description": "Optional WhatsApp phone number in international or local format."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp."
+        }
+      },
+      "required": ["authorUid", "phone", "updatedAt"]
+    },
+    "EventHistory": {
+      "title": "EventHistory",
+      "description": "Archived snapshot of a completed event session saved before clearing the active session.",
+      "type": "object",
+      "properties": {
+        "eventName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Name of the archived event session."
+        },
+        "venue": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Venue of the archived event session."
+        },
+        "closedAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "Human-readable closure date and time."
+        },
+        "attendeeCount": {
+          "type": "number",
+          "description": "Total number of registered attendees in the session."
+        },
+        "topScore": {
+          "type": "number",
+          "description": "Highest arcade score recorded in the session."
+        },
+        "topPlayerName": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 100,
+          "description": "Name of the top scoring player."
+        },
+        "prizesAwardedCount": {
+          "type": "number",
+          "description": "Number of prizes awarded during the session."
+        },
+        "attendeesSummary": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 15000,
+          "description": "Compact summary list of attendees, scores, and prizes for historical reporting."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        }
+      },
+      "required": [
+        "eventName",
+        "venue",
+        "closedAt",
+        "attendeeCount",
+        "topScore",
+        "topPlayerName",
+        "prizesAwardedCount",
+        "attendeesSummary",
+        "createdAt"
+      ]
+    },
     "AdminUser": {
       "title": "AdminUser",
       "description": "Trusted administrator registry.",
@@ -178,7 +303,7 @@
   "firestore": {
     "/eventConfig/{configId}": {
       "schema": { "$ref": "#/entities/EventConfig" },
-      "description": "Stores the global event settings (configId = 'current')."
+      "description": "Stores the global event settings and credential customization."
     },
     "/prizes/{prizeId}": {
       "schema": { "$ref": "#/entities/Prize" },
@@ -186,7 +311,15 @@
     },
     "/attendees/{attendeeId}": {
       "schema": { "$ref": "#/entities/Attendee" },
-      "description": "Stores registered attendees, their arcade scores, and admin-assigned prizes."
+      "description": "Stores public registered attendees, their arcade scores, and admin-assigned prizes."
+    },
+    "/attendeeContacts/{attendeeId}": {
+      "schema": { "$ref": "#/entities/AttendeeContact" },
+      "description": "Isolated PII storage for optional WhatsApp numbers (owner and admin access only)."
+    },
+    "/eventHistory/{historyId}": {
+      "schema": { "$ref": "#/entities/EventHistory" },
+      "description": "Stores archived event sessions saved by the administrator."
     },
     "/admins/{adminUid}": {
       "schema": { "$ref": "#/entities/AdminUser" },

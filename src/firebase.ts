@@ -10,7 +10,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import firebaseConfig from './firebase-applet-config.json';
-import { Attendee, EventConfig, PrizeTier } from './types';
+import { Attendee, EventConfig, EventHistorySession, PrizeTier } from './types';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -94,7 +94,6 @@ export async function logoutFirebase() {
   return signOut(auth);
 }
 
-// Defensive sanitization helpers synced with firebase-blueprint.json
 function sanitizeId(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120) || 'item_default';
 }
@@ -110,6 +109,17 @@ export async function saveEventConfigToFirestore(cfg: EventConfig) {
         10,
         Math.min(120, Math.round(cfg.gameDurationSeconds || 30))
       ),
+      badgeTitle:
+        (cfg.badgeTitle || 'CREDENCIAL OFICIAL DE ACCESO').trim().slice(0, 80),
+      badgeAccentColor: (cfg.badgeAccentColor || '#06B6D4').trim().slice(0, 20),
+      badgeFooterNote: (cfg.badgeFooterNote || '').trim().slice(0, 160),
+      whatsappTemplate:
+        (
+          cfg.whatsappTemplate ||
+          '¡Hola {nombre}! Aquí tienes tu credencial de {evento}.'
+        )
+          .trim()
+          .slice(0, 500),
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -161,8 +171,30 @@ export async function createAttendeeInFirestore(att: Attendee, authorUid: string
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+
+    if (att.phone && att.phone.trim()) {
+      await saveAttendeeContactPhone(cleanId, authorUid, att.phone.trim());
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function saveAttendeeContactPhone(
+  attendeeId: string,
+  authorUid: string,
+  phone: string
+) {
+  const cleanId = sanitizeId(attendeeId);
+  const path = `attendeeContacts/${cleanId}`;
+  try {
+    await setDoc(doc(db, 'attendeeContacts', cleanId), {
+      authorUid: sanitizeId(authorUid),
+      phone: phone.trim().slice(0, 30),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 
@@ -206,6 +238,42 @@ export async function deleteAttendeeFromFirestoreAdmin(attendeeId: string) {
   const path = `attendees/${cleanId}`;
   try {
     await deleteDoc(doc(db, 'attendees', cleanId));
+    await deleteDoc(doc(db, 'attendeeContacts', cleanId)).catch(() => {});
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function saveEventHistorySessionAdmin(
+  session: EventHistorySession
+) {
+  const cleanId = sanitizeId(session.id);
+  const path = `eventHistory/${cleanId}`;
+  try {
+    await setDoc(doc(db, 'eventHistory', cleanId), {
+      eventName: session.eventName.trim().slice(0, 120) || 'Evento',
+      venue: session.venue.trim().slice(0, 120) || 'Salón',
+      closedAt: session.closedAt.trim().slice(0, 60),
+      attendeeCount: Math.max(0, Math.min(100000, session.attendeeCount)),
+      topScore: Math.max(0, Math.min(10000000, session.topScore)),
+      topPlayerName: (session.topPlayerName || '').trim().slice(0, 100),
+      prizesAwardedCount: Math.max(
+        0,
+        Math.min(100000, session.prizesAwardedCount)
+      ),
+      attendeesSummary: (session.attendeesSummary || '').slice(0, 15000),
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function deleteEventHistorySessionAdmin(historyId: string) {
+  const cleanId = sanitizeId(historyId);
+  const path = `eventHistory/${cleanId}`;
+  try {
+    await deleteDoc(doc(db, 'eventHistory', cleanId));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }

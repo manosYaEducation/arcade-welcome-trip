@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Download, Award, QrCode, UserPlus, Gamepad2 } from 'lucide-react';
+import { Download, Award, QrCode, UserPlus, Gamepad2, FileText } from 'lucide-react';
 import { Attendee, EventConfig } from '../types';
 import {
   computeSha256Hex,
+  downloadSingleCredentialPdf,
   generateDeterministicQrMatrix,
   retroAudio,
 } from '../services/soundAndCrypto';
@@ -65,7 +66,7 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
     }
   }, [activeAttendee]);
 
-  // Dibujar el Diploma en alta resolución (1200x800)
+  // Dibujar el Diploma en alta resolución (1200x800) usando el color y textos personalizados del evento
   useEffect(() => {
     const canvas = certCanvasRef.current;
     if (!canvas || !activeAttendee) return;
@@ -74,11 +75,12 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
 
     const W = canvas.width;
     const H = canvas.height;
+    const accent = config.badgeAccentColor || '#06B6D4';
 
     ctx.fillStyle = '#090D16';
     ctx.fillRect(0, 0, W, H);
 
-    ctx.strokeStyle = '#06B6D4';
+    ctx.strokeStyle = accent;
     ctx.lineWidth = 4;
     ctx.strokeRect(40, 40, W - 80, H - 80);
 
@@ -86,10 +88,14 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
     ctx.lineWidth = 2;
     ctx.strokeRect(56, 56, W - 112, H - 112);
 
-    ctx.fillStyle = '#06B6D4';
+    ctx.fillStyle = accent;
     ctx.font = '600 18px "JetBrains Mono", monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('DIPLOMA DE BIENVENIDA Y PARTICIPACIÓN', W / 2, 130);
+    ctx.fillText(
+      (config.badgeTitle || 'DIPLOMA DE BIENVENIDA Y PARTICIPACIÓN').toUpperCase(),
+      W / 2,
+      130
+    );
 
     ctx.fillStyle = '#FFFFFF';
     ctx.font = '700 46px "Outfit", sans-serif';
@@ -107,7 +113,7 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
     ctx.font = '700 58px "Outfit", sans-serif';
     ctx.fillText(activeAttendee.name, W / 2, 375);
 
-    ctx.fillStyle = '#38BDF8';
+    ctx.fillStyle = accent;
     ctx.font = '600 24px "Plus Jakarta Sans", sans-serif';
     const subtitleRole = activeAttendee.organization
       ? `${activeAttendee.role} · ${activeAttendee.organization}`
@@ -129,7 +135,7 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
       {
         title: 'PUNTAJE ARCADE',
         value: `${activeAttendee.arcadeScore.toLocaleString()} PTS`,
-        color: '#06B6D4',
+        color: accent,
       },
       {
         title: 'PREMIO TÓMBOLA ADMIN',
@@ -156,13 +162,20 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
       ctx.fillText(b.value, x + boxW / 2, boxY + 82);
     });
 
+    if (config.badgeFooterNote) {
+      ctx.fillStyle = '#94A3B8';
+      ctx.font = '500 15px "Plus Jakarta Sans", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(config.badgeFooterNote, W / 2, H - 115);
+    }
+
     ctx.fillStyle = '#64748B';
     ctx.font = '500 13px "JetBrains Mono", monospace';
     ctx.textAlign = 'center';
     ctx.fillText(
       `Huella de verificación SHA-256: ${verificationHash.slice(0, 48)}`,
       W / 2,
-      H - 85
+      H - 80
     );
   }, [activeAttendee, config, verificationHash]);
 
@@ -179,6 +192,12 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
     document.body.removeChild(link);
     retroAudio.playCheckInSuccess();
     setDownloaded(true);
+  };
+
+  const handleDownloadCredentialPdf = () => {
+    if (!activeAttendee) return;
+    downloadSingleCredentialPdf(activeAttendee, config);
+    retroAudio.playCheckInSuccess();
   };
 
   if (!activeAttendee) {
@@ -242,10 +261,16 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Pase Digital con QR */}
-        <div className="lg:col-span-4 bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-5 text-center">
-          <div className="inline-flex items-center gap-1.5 text-xs font-mono text-cyan-400">
+        <div
+          className="lg:col-span-4 bg-slate-900/90 border rounded-3xl p-6 space-y-5 text-center"
+          style={{ borderColor: `${config.badgeAccentColor || '#06B6D4'}66` }}
+        >
+          <div
+            className="inline-flex items-center gap-1.5 text-xs font-mono font-semibold"
+            style={{ color: config.badgeAccentColor || '#06B6D4' }}
+          >
             <QrCode className="w-4 h-4" />
-            <span>PASE DIGITAL DE ASISTENTE</span>
+            <span>{(config.badgeTitle || 'PASE DIGITAL DE ASISTENTE').toUpperCase()}</span>
           </div>
 
           <div className="bg-white p-3 rounded-2xl inline-block mx-auto">
@@ -272,7 +297,10 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
             </div>
             <div className="flex justify-between">
               <span className="text-slate-400">Puntaje Arcade:</span>
-              <span className="font-mono font-bold text-cyan-400">
+              <span
+                className="font-mono font-bold"
+                style={{ color: config.badgeAccentColor || '#06B6D4' }}
+              >
                 {activeAttendee.arcadeScore.toLocaleString()} pts
               </span>
             </div>
@@ -284,16 +312,31 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onGoToArcade}
-            className="w-full min-h-[46px] py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-cyan-300 font-semibold text-xs rounded-2xl border border-slate-700 flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <Gamepad2 className="w-4 h-4" />
-            <span>
-              {activeAttendee.playedArcade ? 'Volver a jugar Arcade' : 'Ir a jugar Arcade'}
-            </span>
-          </button>
+          {config.badgeFooterNote && (
+            <p className="text-[11px] text-slate-400">{config.badgeFooterNote}</p>
+          )}
+
+          <div className="space-y-2 pt-1">
+            <button
+              type="button"
+              onClick={handleDownloadCredentialPdf}
+              className="w-full min-h-[46px] py-2.5 px-4 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs rounded-2xl transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <FileText className="w-4 h-4" />
+              <span>Descargar Credencial PDF</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onGoToArcade}
+              className="w-full min-h-[44px] py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-cyan-300 font-semibold text-xs rounded-2xl border border-slate-700 flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Gamepad2 className="w-4 h-4" />
+              <span>
+                {activeAttendee.playedArcade ? 'Volver a jugar Arcade' : 'Ir a jugar Arcade'}
+              </span>
+            </button>
+          </div>
         </div>
 
         {/* Diploma en PNG */}
@@ -304,7 +347,7 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
                 Tu Diploma Personalizado
               </h3>
               <p className="text-xs text-slate-400">
-                Si el organizador te asigna un premio en la Tómbola Admin, tu diploma se actualiza al instante.
+                Si el organizador te asigna un premio en la Tómbola Admin, tu diploma y credencial se actualizan al instante.
               </p>
             </div>
 

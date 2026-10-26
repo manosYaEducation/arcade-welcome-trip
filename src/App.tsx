@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Volume2,
   VolumeX,
@@ -23,6 +23,8 @@ import {
   LogIn,
   LogOut,
   Cloud,
+  FileText,
+  Phone,
 } from 'lucide-react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
@@ -33,6 +35,7 @@ import {
   AttendeeTab,
   EncryptedBackupPackage,
   EventConfig,
+  EventHistorySession,
   PrizeTier,
   WordEntry,
 } from './types';
@@ -49,18 +52,22 @@ import {
   createAttendeeInFirestore,
   db,
   deleteAttendeeFromFirestoreAdmin,
+  deleteEventHistorySessionAdmin,
   deletePrizeFromFirestore,
   handleFirestoreError,
   loginWithGoogle,
   logoutFirebase,
   OperationType,
+  saveAttendeeContactPhone,
   saveEventConfigToFirestore,
+  saveEventHistorySessionAdmin,
   savePrizeToFirestore,
   updateAttendeeScoreInFirestore,
 } from './firebase';
 import { ArcadeGameModule } from './components/ArcadeGameModule';
 import { CertificateAndPassModule } from './components/CertificateAndPassModule';
 import { AdminTombolaModule } from './components/AdminTombolaModule';
+import { AdminCredentialsAndHistoryModule } from './components/AdminCredentialsAndHistoryModule';
 
 const SUGGESTED_WORDS = [
   'Innovación',
@@ -96,13 +103,16 @@ export default function App() {
   const [config, setConfig] = useState<EventConfig>(DEFAULT_EVENT_CONFIG);
 
   // Lista real de asistentes (sincronizada con Firestore cuando está autenticado)
-  const [attendees, setAttendees] = useState<Attendee[]>([]);
+  const [rawAttendees, setRawAttendees] = useState<Attendee[]>([]);
+  const [contactPhonesMap, setContactPhonesMap] = useState<Record<string, string>>({});
+  const [historySessions, setHistorySessions] = useState<EventHistorySession[]>([]);
   const [currentAttendeeId, setCurrentAttendeeId] = useState<string>('');
 
   // Formulario de Registro (Modo Asistente)
   const [nameInput, setNameInput] = useState<string>('');
   const [roleInput, setRoleInput] = useState<string>(ROLE_OPTIONS[0]);
   const [orgInput, setOrgInput] = useState<string>('');
+  const [phoneInput, setPhoneInput] = useState<string>('');
   const [wordInput, setWordInput] = useState<string>('Innovación');
   const [formError, setFormError] = useState<string>('');
 
@@ -123,6 +133,14 @@ export default function App() {
   const isFirebaseAdmin =
     Boolean(firebaseUser?.emailVerified) &&
     firebaseUser?.email === ADMIN_EMAIL;
+
+  // Fusionar los teléfonos de contacto privados (cuando están disponibles) con la lista de asistentes
+  const attendees: Attendee[] = useMemo(() => {
+    return rawAttendees.map((att) => ({
+      ...att,
+      phone: contactPhonesMap[att.id] ?? att.phone ?? '',
+    }));
+  }, [rawAttendees, contactPhonesMap]);
 
   // 1. Escuchar estado de Firebase Auth
   useEffect(() => {
@@ -156,6 +174,10 @@ export default function App() {
               typeof data.gameDurationSeconds === 'number'
                 ? data.gameDurationSeconds
                 : prev.gameDurationSeconds,
+            badgeTitle: data.badgeTitle || prev.badgeTitle,
+            badgeAccentColor: data.badgeAccentColor || prev.badgeAccentColor,
+            badgeFooterNote: data.badgeFooterNote ?? prev.badgeFooterNote,
+            whatsappTemplate: data.whatsappTemplate || prev.whatsappTemplate,
           }));
         }
       },
@@ -171,7 +193,6 @@ export default function App() {
       prizesQuery,
       (snap) => {
         if (snap.empty) {
-          // Si el admin entra por primera vez y no hay premios en Firestore, sembrar los premios base
           if (
             firebaseUser.email === ADMIN_EMAIL &&
             !seededDefaultPrizesRef.current
@@ -220,7 +241,7 @@ export default function App() {
             prizeWon: data.prizeWon ? String(data.prizeWon) : undefined,
           };
         });
-        setAttendees(list);
+        setRawAttendees(list);
         setCurrentAttendeeId((prevId) => {
           if (prevId && list.some((a) => a.id === prevId)) return prevId;
           const ownDoc = list.find((a) => a.id === `att_${firebaseUser.uid}`);
@@ -230,10 +251,75 @@ export default function App() {
       (err) => handleFirestoreError(err, OperationType.LIST, 'attendees')
     );
 
+    // 2d. Si es Admin, escuchar también /attendeeContacts y /eventHistory
+    let unsubContacts: (() => void) | null = null;
+    let unsubHistory: (() => void) | null = null;
+
+    if (firebaseUser.email === ADMIN_EMAIL && firebaseUser.emailVerified) {
+      unsubContacts = onSnapshot(
+        collection(db, 'attendeeContacts'),
+        (snap) => {
+          const nextMap: Record<string, string> = {};
+          snap.docs.forEach((d) => {
+            const data = d.data();
+            if (data.phone) {
+              nextMap[d.id] = String(data.phone);
+            }
+          });
+          setContactPhonesMap((prev) => ({ ...prev, ...nextMap }));
+        },
+        (err) => handleFirestoreError(err, OperationType.LIST, 'attendeeContacts')
+      );
+
+      unsubHistory = onSnapshot(
+        collection(db, 'eventHistory'),
+        (snap) => {
+          const loadedHistory: EventHistorySession[] = snap.docs
+            .map((d) => {
+              const data = d.data();
+              return {
+                id: d.id,
+                eventName: String(data.eventName || 'Sesión archivada'),
+                venue: String(data.venue || ''),
+                closedAt: String(data.closedAt || ''),
+                attendeeCount: Number(data.attendeeCount ?? 0),
+                topScore: Number(data.topScore ?? 0),
+                topPlayerName: String(data.topPlayerName || 'Sin registros'),
+                prizesAwardedCount: Number(data.prizesAwardedCount ?? 0),
+                attendeesSummary: String(data.attendeesSummary || '[]'),
+              };
+            })
+            .sort((a, b) => b.id.localeCompare(a.id));
+          setHistorySessions(loadedHistory);
+        },
+        (err) => handleFirestoreError(err, OperationType.LIST, 'eventHistory')
+      );
+    } else {
+      // Si es un asistente normal, escuchar su propio contacto /attendeeContacts/att_{uid}
+      const ownContactRef = doc(db, 'attendeeContacts', `att_${firebaseUser.uid}`);
+      unsubContacts = onSnapshot(
+        ownContactRef,
+        (snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            if (data.phone) {
+              setContactPhonesMap((prev) => ({
+                ...prev,
+                [`att_${firebaseUser.uid}`]: String(data.phone),
+              }));
+            }
+          }
+        },
+        () => {}
+      );
+    }
+
     return () => {
       unsubConfig();
       unsubPrizes();
       unsubAttendees();
+      if (unsubContacts) unsubContacts();
+      if (unsubHistory) unsubHistory();
     };
   }, [authReady, firebaseUser]);
 
@@ -278,11 +364,14 @@ export default function App() {
       ? `att_${firebaseUser.uid}`
       : `user_${Date.now()}`;
 
+    const cleanPhone = phoneInput.trim().slice(0, 40);
+
     const newPerson: Attendee = {
       id: attendeeId,
       name: cleanName.slice(0, 100),
       role: roleInput.slice(0, 80),
       organization: orgInput.trim().slice(0, 100),
+      phone: cleanPhone || undefined,
       wordForCloud: (wordInput.trim() || 'Bienvenida').slice(0, 60),
       checkedInAt: nowTime,
       arcadeScore: 0,
@@ -290,10 +379,17 @@ export default function App() {
       playedArcade: false,
     };
 
+    if (cleanPhone) {
+      setContactPhonesMap((prev) => ({
+        ...prev,
+        [attendeeId]: cleanPhone,
+      }));
+    }
+
     if (firebaseUser) {
       await createAttendeeInFirestore(newPerson, firebaseUser.uid);
     } else {
-      setAttendees((prev) => [
+      setRawAttendees((prev) => [
         newPerson,
         ...prev.filter((a) => a.id !== newPerson.id),
       ]);
@@ -311,7 +407,7 @@ export default function App() {
     const bestScore = Math.max(currentPlayer.arcadeScore, score);
     const bestCombo = Math.max(currentPlayer.maxCombo, maxCombo);
 
-    setAttendees((prev) =>
+    setRawAttendees((prev) =>
       prev.map((a) =>
         a.id === currentPlayer.id
           ? {
@@ -340,7 +436,7 @@ export default function App() {
   ) => {
     const nextStock = Math.max(0, prize.stock - 1);
 
-    setAttendees((prev) =>
+    setRawAttendees((prev) =>
       prev.map((a) =>
         a.id === attendeeId
           ? {
@@ -364,8 +460,88 @@ export default function App() {
     }
   };
 
+  // Exclusivo Admin: Actualizar configuración de credenciales / plantilla WhatsApp
+  const handleUpdateConfigAndPersist = async (nextConfig: EventConfig) => {
+    setConfig(nextConfig);
+    if (firebaseUser && isFirebaseAdmin) {
+      await saveEventConfigToFirestore(nextConfig);
+    }
+  };
+
+  // Exclusivo Admin: Editar o ingresar número de WhatsApp de un asistente
+  const handleAdminUpdateAttendeePhone = async (
+    attendeeId: string,
+    phone: string
+  ) => {
+    const clean = phone.trim().slice(0, 40);
+    setContactPhonesMap((prev) => ({
+      ...prev,
+      [attendeeId]: clean,
+    }));
+    setRawAttendees((prev) =>
+      prev.map((a) => (a.id === attendeeId ? { ...a, phone: clean } : a))
+    );
+
+    if (firebaseUser && clean) {
+      await saveAttendeeContactPhone(attendeeId, clean, firebaseUser.uid);
+    }
+  };
+
+  // Exclusivo Admin: Guardar sesión lista en Histórico y limpiar la sesión activa
+  const handleArchiveAndClearSession = async () => {
+    if (attendees.length === 0) return;
+
+    const sorted = [...attendees].sort((a, b) => b.arcadeScore - a.arcadeScore);
+    const best = sorted[0];
+    const nowFormatted = new Date().toLocaleString([], {
+      dateStyle: 'short',
+      timeStyle: 'short',
+    });
+
+    const prizesAwardedCount = attendees.filter((a) => Boolean(a.prizeWon)).length;
+    const summaryItems = attendees.slice(0, 60).map((a) => ({
+      name: a.name,
+      role: a.role,
+      score: a.arcadeScore,
+      prize: a.prizeWon || '',
+    }));
+
+    const newSession: EventHistorySession = {
+      id: `hist_${Date.now()}`,
+      eventName: config.eventName,
+      venue: config.venue,
+      closedAt: nowFormatted,
+      attendeeCount: attendees.length,
+      topScore: best ? best.arcadeScore : 0,
+      topPlayerName: best ? best.name : 'Sin registros',
+      prizesAwardedCount,
+      attendeesSummary: JSON.stringify(summaryItems).slice(0, 4800),
+    };
+
+    if (firebaseUser && isFirebaseAdmin) {
+      await saveEventHistorySessionAdmin(newSession);
+      for (const att of attendees) {
+        await deleteAttendeeFromFirestoreAdmin(att.id);
+      }
+    } else {
+      setHistorySessions((prev) => [newSession, ...prev]);
+    }
+
+    setRawAttendees([]);
+    setContactPhonesMap({});
+    setCurrentAttendeeId('');
+    retroAudio.playCheckInSuccess();
+  };
+
+  const handleDeleteHistorySession = async (sessionId: string) => {
+    setHistorySessions((prev) => prev.filter((s) => s.id !== sessionId));
+    if (firebaseUser && isFirebaseAdmin) {
+      await deleteEventHistorySessionAdmin(sessionId);
+    }
+  };
+
   // Nube de palabras real
-  const realWords: WordEntry[] = React.useMemo(() => {
+  const realWords: WordEntry[] = useMemo(() => {
     const counts = new Map<string, number>();
     for (const att of attendees) {
       const w = att.wordForCloud.trim();
@@ -460,6 +636,7 @@ export default function App() {
         role: (parts[1] || 'Invitado General').slice(0, 80),
         organization: (parts[2] || '').slice(0, 100),
         wordForCloud: (parts[3] || 'Comunidad').slice(0, 60),
+        phone: parts[4] ? parts[4].slice(0, 40) : undefined,
         checkedInAt: nowTime,
         arcadeScore: 0,
         maxCombo: 1,
@@ -472,7 +649,7 @@ export default function App() {
         await createAttendeeInFirestore(att, firebaseUser.uid);
       }
     } else {
-      setAttendees((prev) => [...imported, ...prev]);
+      setRawAttendees((prev) => [...imported, ...prev]);
     }
 
     if (!currentAttendeeId && imported[0]) {
@@ -530,7 +707,8 @@ export default function App() {
         await deleteAttendeeFromFirestoreAdmin(att.id);
       }
     }
-    setAttendees([]);
+    setRawAttendees([]);
+    setContactPhonesMap({});
     setCurrentAttendeeId('');
   };
 
@@ -593,7 +771,7 @@ export default function App() {
             </button>
           </nav>
         ) : (
-          <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-300">
+          <nav className="hidden md:flex items-center gap-5 text-sm font-medium text-slate-300">
             <button
               type="button"
               onClick={() => setAdminTab('tombola')}
@@ -604,6 +782,17 @@ export default function App() {
               }`}
             >
               Ruleta / Tómbola
+            </button>
+            <button
+              type="button"
+              onClick={() => setAdminTab('credentials')}
+              className={`hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer pb-0.5 ${
+                adminTab === 'credentials'
+                  ? 'text-amber-400 border-b-2 border-amber-400 font-semibold'
+                  : ''
+              }`}
+            >
+              Credenciales PDF y WhatsApp
             </button>
             <button
               type="button"
@@ -750,6 +939,19 @@ export default function App() {
 
               <button
                 type="button"
+                onClick={() => setAdminTab('credentials')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                  adminTab === 'credentials'
+                    ? 'bg-amber-500 text-slate-950'
+                    : 'bg-slate-900 text-slate-300 border border-slate-800'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>2. Credenciales PDF, WhatsApp e Histórico</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setAdminTab('live')}
                 className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
                   adminTab === 'live'
@@ -758,7 +960,7 @@ export default function App() {
                 }`}
               >
                 <Tv className="w-3.5 h-3.5" />
-                <span>2. Pantalla en Vivo</span>
+                <span>3. Pantalla en Vivo</span>
               </button>
 
               <button
@@ -771,7 +973,7 @@ export default function App() {
                 }`}
               >
                 <Settings className="w-3.5 h-3.5" />
-                <span>3. Ajustes y Respaldo</span>
+                <span>4. Ajustes y Respaldo</span>
               </button>
             </div>
           </div>
@@ -852,6 +1054,22 @@ export default function App() {
                   </div>
 
                   <div>
+                    <label className="block text-xs font-semibold text-slate-200 mb-1.5 flex items-center gap-1.5">
+                      <Phone className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>
+                        WhatsApp / Teléfono (Opcional — si quieres recibir tu credencial por WhatsApp)
+                      </span>
+                    </label>
+                    <input
+                      type="tel"
+                      value={phoneInput}
+                      onChange={(e) => setPhoneInput(e.target.value)}
+                      placeholder="Ej: +56 9 8765 4321"
+                      className="w-full min-h-[48px] bg-slate-950 border border-slate-700 rounded-2xl px-4 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                    />
+                  </div>
+
+                  <div>
                     <label className="block text-xs font-semibold text-slate-200 mb-1.5">
                       Elige o escribe 1 palabra para la Nube en Vivo
                     </label>
@@ -914,7 +1132,7 @@ export default function App() {
           </>
         ) : (
           /* ===================================================================
-             SECCIÓN ADMIN / ORGANIZADOR (TÓMBOLA, PANTALLA EN VIVO, AJUSTES)
+             SECCIÓN ADMIN / ORGANIZADOR (TÓMBOLA, CREDENCIALES/HISTÓRICO, EN VIVO, AJUSTES)
              =================================================================== */
           <>
             {adminTab === 'tombola' && (
@@ -922,6 +1140,18 @@ export default function App() {
                 config={config}
                 attendees={attendees}
                 onAssignPrizeToAttendee={handleAdminAssignPrize}
+              />
+            )}
+
+            {adminTab === 'credentials' && (
+              <AdminCredentialsAndHistoryModule
+                config={config}
+                attendees={attendees}
+                historySessions={historySessions}
+                onUpdateConfig={handleUpdateConfigAndPersist}
+                onUpdateAttendeePhone={handleAdminUpdateAttendeePhone}
+                onArchiveAndClearSession={handleArchiveAndClearSession}
+                onDeleteHistorySession={handleDeleteHistorySession}
               />
             )}
 
@@ -1217,7 +1447,7 @@ export default function App() {
                       <p className="text-xs text-slate-400">
                         Formato por línea:{' '}
                         <code className="text-slate-200">
-                          Nombre, Rol, Empresa, Palabra
+                          Nombre, Rol, Empresa, Palabra, WhatsApp(Opcional)
                         </code>
                       </p>
                       <textarea
@@ -1225,7 +1455,7 @@ export default function App() {
                         value={csvImportText}
                         onChange={(e) => setCsvImportText(e.target.value)}
                         placeholder={
-                          'Ana Gómez, Diseño / UX, Studio Sur, Creatividad\nCarlos Ruiz, Desarrollo / Ingeniería, TechLab, Futuro'
+                          'Ana Gómez, Diseño / UX, Studio Sur, Creatividad, +56987654321\nCarlos Ruiz, Desarrollo / Ingeniería, TechLab, Futuro'
                         }
                         className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-xs font-mono text-white"
                       />

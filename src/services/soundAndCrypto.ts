@@ -1,4 +1,11 @@
-import { EncryptedBackupPackage, EventConfig, PrizeTier } from '../types';
+import { jsPDF } from 'jspdf';
+import {
+  Attendee,
+  EncryptedBackupPackage,
+  EventConfig,
+  EventHistorySession,
+  PrizeTier,
+} from '../types';
 
 /**
  * Síntesis de Audio 8-Bit Nativa (Web Audio API sin archivos externos)
@@ -12,7 +19,8 @@ class RetroAudioSynthesizer {
     if (!this.ctx) {
       const AudioCtx =
         window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
       if (AudioCtx) {
         this.ctx = new AudioCtx();
       }
@@ -41,7 +49,10 @@ class RetroAudioSynthesizer {
     osc.type = type;
     osc.frequency.setValueAtTime(freq, now);
     if (endFreq !== undefined) {
-      osc.frequency.exponentialRampToValueAtTime(Math.max(20, endFreq), now + durationSec);
+      osc.frequency.exponentialRampToValueAtTime(
+        Math.max(20, endFreq),
+        now + durationSec
+      );
     }
 
     gain.gain.setValueAtTime(0.0001, now);
@@ -99,7 +110,7 @@ class RetroAudioSynthesizer {
 export const retroAudio = new RetroAudioSynthesizer();
 
 /**
- * Funciones reales de Criptografía en Navegador (window.crypto.subtle)
+ * Criptografía en Navegador (window.crypto.subtle)
  */
 export function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
@@ -222,9 +233,6 @@ export async function decryptBackupWithPassword(
   return new TextDecoder().decode(decryptedBuffer);
 }
 
-/**
- * Sorteo aleatorio criptográfico real (window.crypto.getRandomValues)
- */
 export function pickRandomPrize(prizes: PrizeTier[]): {
   selectedPrize: PrizeTier;
   selectedIndex: number;
@@ -244,9 +252,6 @@ export function pickRandomPrize(prizes: PrizeTier[]): {
   };
 }
 
-/**
- * Matriz QR Determinista 21x21 para el Pase Digital
- */
 export function generateDeterministicQrMatrix(payload: string): boolean[][] {
   const size = 21;
   const matrix: boolean[][] = Array.from({ length: size }, () =>
@@ -303,11 +308,276 @@ export function generateDeterministicQrMatrix(payload: string): boolean[][] {
   return matrix;
 }
 
+/**
+ * Renderiza en un Canvas HTML5 una Credencial Personalizada lista para PDF o PNG
+ */
+export function renderCredentialCardToCanvas(
+  canvas: HTMLCanvasElement,
+  attendee: Attendee,
+  config: EventConfig
+) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const W = canvas.width;
+  const H = canvas.height;
+  const accent = config.badgeAccentColor || '#06B6D4';
+
+  // Fondo oscuro elegante
+  ctx.fillStyle = '#090D16';
+  ctx.fillRect(0, 0, W, H);
+
+  // Franja superior con el color de acento personalizado
+  ctx.fillStyle = accent;
+  ctx.fillRect(0, 0, W, 18);
+
+  // Marco perimetral
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(24, 34, W - 48, H - 58);
+
+  // Encabezado personalizado (badgeTitle + eventName)
+  ctx.fillStyle = accent;
+  ctx.font = '700 16px "JetBrains Mono", monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(
+    (config.badgeTitle || 'CREDENCIAL OFICIAL DE ASISTENTE').toUpperCase(),
+    W / 2,
+    82
+  );
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = '700 34px "Outfit", sans-serif';
+  ctx.fillText(config.eventName, W / 2, 126);
+
+  ctx.fillStyle = '#94A3B8';
+  ctx.font = '500 16px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(`${config.venue} ·Ingreso: ${attendee.checkedInAt}`, W / 2, 158);
+
+  // Código QR central
+  const payload = `PASE:${attendee.name}|ROL:${attendee.role}|PTS:${attendee.arcadeScore}`;
+  const matrix = generateDeterministicQrMatrix(payload);
+  const qrCell = 7;
+  const qrSize = matrix.length * qrCell + 24;
+  const qrX = Math.floor((W - qrSize) / 2);
+  const qrY = 186;
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(qrX, qrY, qrSize, qrSize);
+  ctx.fillStyle = '#090D16';
+  for (let r = 0; r < matrix.length; r++) {
+    for (let c = 0; c < matrix.length; c++) {
+      if (matrix[r][c]) {
+        ctx.fillRect(
+          qrX + 12 + c * qrCell,
+          qrY + 12 + r * qrCell,
+          qrCell,
+          qrCell
+        );
+      }
+    }
+  }
+
+  // Nombre y Rol del Participante
+  const nameY = qrY + qrSize + 54;
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = '700 38px "Outfit", sans-serif';
+  ctx.fillText(attendee.name.slice(0, 28), W / 2, nameY);
+
+  ctx.fillStyle = accent;
+  ctx.font = '600 20px "Plus Jakarta Sans", sans-serif';
+  const roleOrg = attendee.organization
+    ? `${attendee.role} · ${attendee.organization}`
+    : attendee.role;
+  ctx.fillText(roleOrg.slice(0, 42), W / 2, nameY + 34);
+
+  // Tarjetas de Puntaje y Premio
+  const boxY = nameY + 62;
+  const boxW = (W - 120) / 2;
+  const boxH = 88;
+
+  // Caja 1: Puntaje Arcade
+  ctx.fillStyle = '#0F172A';
+  ctx.fillRect(48, boxY, boxW, boxH);
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(48, boxY, boxW, boxH);
+
+  ctx.fillStyle = '#94A3B8';
+  ctx.font = '600 12px "JetBrains Mono", monospace';
+  ctx.fillText('PUNTAJE ARCADE', 48 + boxW / 2, boxY + 30);
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = '700 22px "JetBrains Mono", monospace';
+  ctx.fillText(
+    `${attendee.arcadeScore.toLocaleString()} PTS`,
+    48 + boxW / 2,
+    boxY + 62
+  );
+
+  // Caja 2: Premio Tómbola
+  const box2X = 72 + boxW;
+  ctx.fillStyle = '#0F172A';
+  ctx.fillRect(box2X, boxY, boxW, boxH);
+  ctx.strokeStyle = '#F59E0B';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(box2X, boxY, boxW, boxH);
+
+  ctx.fillStyle = '#94A3B8';
+  ctx.font = '600 12px "JetBrains Mono", monospace';
+  ctx.fillText('PREMIO TÓMBOLA', box2X + boxW / 2, boxY + 30);
+  ctx.fillStyle = '#F59E0B';
+  ctx.font = '700 18px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(
+    (attendee.prizeWon || 'En sorteo').slice(0, 20),
+    box2X + boxW / 2,
+    boxY + 62
+  );
+
+  // Nota al pie personalizada
+  ctx.fillStyle = '#94A3B8';
+  ctx.font = '500 14px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(
+    config.badgeFooterNote || 'Gracias por ser parte de esta experiencia',
+    W / 2,
+    H - 52
+  );
+}
+
+/**
+ * Descarga un PDF individual de la credencial lista para imprimir o enviar por WhatsApp
+ */
+export function downloadSingleCredentialPdf(
+  attendee: Attendee,
+  config: EventConfig
+) {
+  const offscreen = document.createElement('canvas');
+  offscreen.width = 600;
+  offscreen.height = 760;
+  renderCredentialCardToCanvas(offscreen, attendee, config);
+  const imgData = offscreen.toDataURL('image/png');
+
+  const pdf = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  // Centrar credencial en hoja A4 (105mm x 133mm)
+  pdf.addImage(imgData, 'PNG', 52.5, 40, 105, 133);
+  const cleanName = attendee.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+  pdf.save(`Credencial_${cleanName}.pdf`);
+}
+
+/**
+ * Descarga un PDF con todas las credenciales en grilla (4 por página A4) listo para imprimir y recortar
+ */
+export function downloadAllCredentialsBatchPdf(
+  attendees: Attendee[],
+  config: EventConfig
+) {
+  if (attendees.length === 0) return;
+
+  const pdf = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  const offscreen = document.createElement('canvas');
+  offscreen.width = 600;
+  offscreen.height = 760;
+
+  const positions = [
+    { x: 12, y: 12 },
+    { x: 108, y: 12 },
+    { x: 12, y: 148 },
+    { x: 108, y: 148 },
+  ];
+
+  attendees.forEach((att, idx) => {
+    const slotIdx = idx % 4;
+    if (idx > 0 && slotIdx === 0) {
+      pdf.addPage();
+    }
+    renderCredentialCardToCanvas(offscreen, att, config);
+    const imgData = offscreen.toDataURL('image/png');
+    const pos = positions[slotIdx];
+    pdf.addImage(imgData, 'PNG', pos.x, pos.y, 90, 114);
+  });
+
+  const cleanEvent = config.eventName.replace(/[^a-zA-Z0-9_-]/g, '_');
+  pdf.save(`Credenciales_Lote_${cleanEvent}.pdf`);
+}
+
+/**
+ * Descarga un PDF de resumen de una sesión guardada en Histórico
+ */
+export function downloadHistorySessionPdf(session: EventHistorySession) {
+  const pdf = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  pdf.setFontSize(18);
+  pdf.text(`Reporte Histórico: ${session.eventName}`, 16, 22);
+
+  pdf.setFontSize(11);
+  pdf.text(`Lugar: ${session.venue}`, 16, 32);
+  pdf.text(`Fecha de cierre: ${session.closedAt}`, 16, 39);
+  pdf.text(
+    `Total Asistentes: ${session.attendeeCount} | Récord Arcade: ${session.topScore} pts (${session.topPlayerName}) | Premios: ${session.prizesAwardedCount}`,
+    16,
+    46
+  );
+
+  pdf.setFontSize(10);
+  const lines = pdf.splitTextToSize(
+    session.attendeesSummary || 'Sin participantes detallados.',
+    178
+  );
+  pdf.text(lines, 16, 58);
+
+  const cleanName = session.eventName.replace(/[^a-zA-Z0-9_-]/g, '_');
+  pdf.save(`Historico_${cleanName}_${session.id.slice(-5)}.pdf`);
+}
+
+/**
+ * Construye el enlace oficial wa.me para enviar la credencial por WhatsApp
+ */
+export function buildWhatsAppCredentialUrl(
+  phoneRaw: string,
+  attendee: Attendee,
+  config: EventConfig
+): string {
+  const digits = phoneRaw.replace(/[^0-9]/g, '');
+  const template =
+    config.whatsappTemplate ||
+    '¡Hola {nombre}! Aquí tienes tu credencial oficial de {evento}. Tu puntaje Arcade: {puntaje} pts | Premio: {premio}.';
+
+  const message = template
+    .replace(/\{nombre\}/gi, attendee.name)
+    .replace(/\{evento\}/gi, config.eventName)
+    .replace(/\{rol\}/gi, attendee.role)
+    .replace(/\{puntaje\}/gi, attendee.arcadeScore.toLocaleString())
+    .replace(/\{premio\}/gi, attendee.prizeWon || 'Participando en sorteo');
+
+  const encoded = encodeURIComponent(message);
+  return digits
+    ? `https://wa.me/${digits}?text=${encoded}`
+    : `https://wa.me/?text=${encoded}`;
+}
+
 export const DEFAULT_EVENT_CONFIG: EventConfig = {
   eventName: 'Arcade Welcome Trip',
   subtitle: 'Recepción interactiva y bienvenida de asistentes',
   venue: 'Salón Principal',
   gameDurationSeconds: 30,
+  badgeTitle: 'CREDENCIAL OFICIAL DE ACCESO',
+  badgeAccentColor: '#06B6D4',
+  badgeFooterNote: 'Gracias por ser parte de nuestro evento',
+  whatsappTemplate:
+    '¡Hola {nombre}! Te compartimos tu credencial de *{evento}* ({rol}). Puntaje en el reto Arcade: *{puntaje} pts* | Premio Tómbola: *{premio}*.',
   prizes: [
     { id: 'p-1', label: 'Café de Especialidad', stock: 15, color: '#06B6D4' },
     { id: 'p-2', label: 'Pack de Stickers Retro', stock: 25, color: '#F59E0B' },

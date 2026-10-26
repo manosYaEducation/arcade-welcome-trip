@@ -32,12 +32,36 @@ service cloud.firestore {
 
     // 3. Validation Blueprints (Synced with firebase-blueprint.json)
     function isValidEventConfig(data) {
-      return data.keys().hasAll(['eventName', 'subtitle', 'venue', 'gameDurationSeconds', 'updatedAt']) &&
-        data.keys().hasOnly(['eventName', 'subtitle', 'venue', 'gameDurationSeconds', 'updatedAt']) &&
+      return data.keys().hasAll([
+          'eventName',
+          'subtitle',
+          'venue',
+          'gameDurationSeconds',
+          'badgeTitle',
+          'badgeAccentColor',
+          'badgeFooterNote',
+          'whatsappTemplate',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'eventName',
+          'subtitle',
+          'venue',
+          'gameDurationSeconds',
+          'badgeTitle',
+          'badgeAccentColor',
+          'badgeFooterNote',
+          'whatsappTemplate',
+          'updatedAt'
+        ]) &&
         data.eventName is string && data.eventName.size() >= 2 && data.eventName.size() <= 120 &&
         data.subtitle is string && data.subtitle.size() <= 200 &&
         data.venue is string && data.venue.size() >= 1 && data.venue.size() <= 120 &&
         data.gameDurationSeconds is number && data.gameDurationSeconds >= 10 && data.gameDurationSeconds <= 120 &&
+        data.badgeTitle is string && data.badgeTitle.size() >= 2 && data.badgeTitle.size() <= 80 &&
+        data.badgeAccentColor is string && data.badgeAccentColor.size() >= 4 && data.badgeAccentColor.size() <= 20 &&
+        data.badgeFooterNote is string && data.badgeFooterNote.size() <= 160 &&
+        data.whatsappTemplate is string && data.whatsappTemplate.size() >= 5 && data.whatsappTemplate.size() <= 500 &&
         data.updatedAt is timestamp && data.updatedAt == request.time;
     }
 
@@ -97,6 +121,49 @@ service cloud.firestore {
         data.updatedAt is timestamp && data.updatedAt == request.time;
     }
 
+    function isValidAttendeeContact(data) {
+      return data.keys().hasAll(['authorUid', 'phone', 'updatedAt']) &&
+        data.keys().hasOnly(['authorUid', 'phone', 'updatedAt']) &&
+        data.authorUid is string && data.authorUid.size() >= 1 && data.authorUid.size() <= 128 &&
+        data.authorUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.phone is string && data.phone.size() <= 30 &&
+        data.updatedAt is timestamp && data.updatedAt == request.time;
+    }
+
+    function isValidEventHistory(data) {
+      return data.keys().hasAll([
+          'eventName',
+          'venue',
+          'closedAt',
+          'attendeeCount',
+          'topScore',
+          'topPlayerName',
+          'prizesAwardedCount',
+          'attendeesSummary',
+          'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'eventName',
+          'venue',
+          'closedAt',
+          'attendeeCount',
+          'topScore',
+          'topPlayerName',
+          'prizesAwardedCount',
+          'attendeesSummary',
+          'createdAt'
+        ]) &&
+        data.eventName is string && data.eventName.size() >= 1 && data.eventName.size() <= 120 &&
+        data.venue is string && data.venue.size() >= 1 && data.venue.size() <= 120 &&
+        data.closedAt is string && data.closedAt.size() >= 1 && data.closedAt.size() <= 60 &&
+        data.attendeeCount is number && data.attendeeCount >= 0 && data.attendeeCount <= 100000 &&
+        data.topScore is number && data.topScore >= 0 && data.topScore <= 10000000 &&
+        data.topPlayerName is string && data.topPlayerName.size() <= 100 &&
+        data.prizesAwardedCount is number && data.prizesAwardedCount >= 0 && data.prizesAwardedCount <= 100000 &&
+        data.attendeesSummary is string && data.attendeesSummary.size() <= 15000 &&
+        data.createdAt is timestamp && data.createdAt == request.time;
+    }
+
     function isValidAdminUser(data) {
       return data.keys().hasAll(['email', 'createdAt']) &&
         data.keys().hasOnly(['email', 'createdAt']) &&
@@ -126,7 +193,7 @@ service cloud.firestore {
       allow create: if isSignedIn() &&
         isValidId(attendeeId) &&
         isValidAttendee(incoming()) &&
-        incoming().authorUid == request.auth.uid &&
+        (incoming().authorUid == request.auth.uid || isAdmin()) &&
         incoming().createdAt == request.time &&
         (incoming().prizeWon == '' || isAdmin());
 
@@ -149,6 +216,36 @@ service cloud.firestore {
         );
 
       allow delete: if isSignedIn() && isValidId(attendeeId) && isAdmin();
+    }
+
+    // Isolated PII Contact Collection (Phone / WhatsApp) - Restricted strictly to Owner or Admin
+    match /attendeeContacts/{attendeeId} {
+      allow get: if isSignedIn() && isValidId(attendeeId) && (existing().authorUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.authorUid == request.auth.uid || isAdmin());
+
+      allow create: if isSignedIn() &&
+        isValidId(attendeeId) &&
+        isValidAttendeeContact(incoming()) &&
+        (incoming().authorUid == request.auth.uid || isAdmin());
+
+      allow update: if isSignedIn() &&
+        isValidId(attendeeId) &&
+        isValidAttendeeContact(incoming()) &&
+        incoming().authorUid == existing().authorUid && (
+          (existing().authorUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['phone', 'updatedAt'])) ||
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['phone', 'updatedAt']))
+        );
+
+      allow delete: if isSignedIn() && isValidId(attendeeId) && (existing().authorUid == request.auth.uid || isAdmin());
+    }
+
+    // Historical Sessions Collection (Admin Only, Immutable once archived)
+    match /eventHistory/{historyId} {
+      allow get: if isSignedIn() && isValidId(historyId) && isAdmin();
+      allow list: if isSignedIn() && resource.data.attendeeCount >= 0 && isAdmin();
+      allow create: if isSignedIn() && isValidId(historyId) && isValidEventHistory(incoming()) && isAdmin();
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(historyId) && isAdmin();
     }
 
     match /admins/{adminUid} {

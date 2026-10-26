@@ -1,7 +1,7 @@
 export type AppRoleMode = 'attendee' | 'admin';
 
 export type AttendeeTab = 'register' | 'game' | 'pass';
-export type AdminTab = 'tombola' | 'live' | 'settings';
+export type AdminTab = 'tombola' | 'credentials' | 'live' | 'settings';
 
 export interface PrizeTier {
   id: string;
@@ -15,6 +15,10 @@ export interface EventConfig {
   subtitle: string;
   venue: string;
   gameDurationSeconds: number;
+  badgeTitle: string;
+  badgeAccentColor: string;
+  badgeFooterNote: string;
+  whatsappTemplate: string;
   prizes: PrizeTier[];
 }
 
@@ -29,6 +33,19 @@ export interface Attendee {
   maxCombo: number;
   playedArcade: boolean;
   prizeWon?: string;
+  phone?: string;
+}
+
+export interface EventHistorySession {
+  id: string;
+  eventName: string;
+  venue: string;
+  closedAt: string;
+  attendeeCount: number;
+  topScore: number;
+  topPlayerName: string;
+  prizesAwardedCount: number;
+  attendeesSummary: string;
 }
 
 export interface WordEntry {
