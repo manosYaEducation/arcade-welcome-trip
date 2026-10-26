@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Download, Award, QrCode, UserPlus, Gamepad2, FileText } from 'lucide-react';
+import { Download, Award, QrCode, UserPlus, Gamepad2, FileText, Gift } from 'lucide-react';
 import { Attendee, EventConfig } from '../types';
 import {
   computeSha256Hex,
@@ -12,7 +12,6 @@ interface CertificateAndPassModuleProps {
   config: EventConfig;
   attendees: Attendee[];
   currentAttendeeId: string;
-  onSelectAttendee: (id: string) => void;
   onGoToRegister: () => void;
   onGoToArcade: () => void;
 }
@@ -21,7 +20,6 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
   config,
   attendees,
   currentAttendeeId,
-  onSelectAttendee,
   onGoToRegister,
   onGoToArcade,
 }) => {
@@ -36,7 +34,7 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
 
   useEffect(() => {
     if (!activeAttendee) return;
-    const raw = `${config.eventName}|${activeAttendee.name}|${activeAttendee.checkedInAt}|${activeAttendee.arcadeScore}|${activeAttendee.prizeWon || 'SORTEO_ADMIN'}`;
+    const raw = `${config.eventName}|${activeAttendee.name}|${activeAttendee.checkedInAt}|${activeAttendee.arcadeScore}`;
     computeSha256Hex(raw).then((h) => setVerificationHash(h));
   }, [activeAttendee, config.eventName]);
 
@@ -47,7 +45,7 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const payload = `PASE:${activeAttendee.name}|ROL:${activeAttendee.role}|PTS:${activeAttendee.arcadeScore}`;
+    const payload = `PASE:${activeAttendee.name}|ROL:${activeAttendee.role}|HORA:${activeAttendee.checkedInAt}`;
     const matrix = generateDeterministicQrMatrix(payload);
     const size = matrix.length;
     const cellPx = Math.floor(canvas.width / (size + 4));
@@ -66,7 +64,7 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
     }
   }, [activeAttendee]);
 
-  // Dibujar el Diploma en alta resolución (1200x800) usando el color y textos personalizados del evento
+  // Dibujar el Diploma en alta resolución (1200x800) limpio y sin ruido de Tómbola Admin
   useEffect(() => {
     const canvas = certCanvasRef.current;
     if (!canvas || !activeAttendee) return;
@@ -126,6 +124,19 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
     const gap = 30;
     const startX = (W - (boxW * 3 + gap * 2)) / 2;
 
+    const thirdBox =
+      config.pdfShowPrize && activeAttendee.prizeWon
+        ? {
+            title: 'RECONOCIMIENTO ESPECIAL',
+            value: activeAttendee.prizeWon.slice(0, 22),
+            color: '#F59E0B',
+          }
+        : {
+            title: 'HORA DE ACREDITACIÓN',
+            value: activeAttendee.checkedInAt || 'Acreditado',
+            color: '#6366F1',
+          };
+
     const boxes = [
       {
         title: 'PALABRA APORTADA',
@@ -137,11 +148,7 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
         value: `${activeAttendee.arcadeScore.toLocaleString()} PTS`,
         color: accent,
       },
-      {
-        title: 'PREMIO TÓMBOLA ADMIN',
-        value: (activeAttendee.prizeWon || 'En sorteo oficial').slice(0, 22),
-        color: '#F59E0B',
-      },
+      thirdBox,
     ];
 
     boxes.forEach((b, i) => {
@@ -226,41 +233,25 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-slate-900/90 border border-slate-800 rounded-3xl p-5">
         <div>
           <div className="text-xs font-medium text-cyan-400">
-            Paso 3 de 3 · Tu Credencial y Diploma
+            Paso 3 de 3 · Tu Credencial Digital y Diploma
           </div>
           <h2 className="text-xl font-bold text-white mt-0.5">
             ¡Bienvenido/a, {activeAttendee.name}!
           </h2>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
-          {attendees.length > 1 && (
-            <select
-              value={activeAttendee.id}
-              onChange={(e) => onSelectAttendee(e.target.value)}
-              className="min-h-[44px] bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white font-medium"
-            >
-              {attendees.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name} ({a.arcadeScore} pts)
-                </option>
-              ))}
-            </select>
-          )}
-
-          <button
-            type="button"
-            onClick={onGoToRegister}
-            className="min-h-[44px] px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium rounded-xl border border-slate-700 flex items-center gap-1.5 cursor-pointer"
-          >
-            <UserPlus className="w-3.5 h-3.5" />
-            <span>Registrar a otra persona</span>
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onGoToRegister}
+          className="min-h-[44px] px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium rounded-xl border border-slate-700 flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
+        >
+          <UserPlus className="w-3.5 h-3.5" />
+          <span>Editar mis datos / Nuevo registro</span>
+        </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Pase Digital con QR */}
+        {/* Pase Digital con QR (Limpio, sin info interna de tómbola) */}
         <div
           className="lg:col-span-4 bg-slate-900/90 border rounded-3xl p-6 space-y-5 text-center"
           style={{ borderColor: `${config.badgeAccentColor || '#06B6D4'}66` }}
@@ -292,8 +283,14 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
 
           <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 text-left space-y-2.5 text-xs">
             <div className="flex justify-between">
-              <span className="text-slate-400">Hora de registro:</span>
+              <span className="text-slate-400">Hora de ingreso:</span>
               <span className="font-mono text-white">{activeAttendee.checkedInAt}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Palabra aportada:</span>
+              <span className="font-semibold text-emerald-400">
+                {activeAttendee.wordForCloud}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-400">Puntaje Arcade:</span>
@@ -304,12 +301,17 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
                 {activeAttendee.arcadeScore.toLocaleString()} pts
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-slate-400">Tómbola (Admin):</span>
-              <span className="font-semibold text-amber-400">
-                {activeAttendee.prizeWon || 'Inscrito en el sorteo'}
-              </span>
-            </div>
+            {activeAttendee.prizeWon && (
+              <div className="flex justify-between pt-1.5 border-t border-slate-800">
+                <span className="text-amber-300 flex items-center gap-1">
+                  <Gift className="w-3.5 h-3.5" />
+                  <span>Premio obtenido:</span>
+                </span>
+                <span className="font-bold text-amber-400">
+                  {activeAttendee.prizeWon}
+                </span>
+              </div>
+            )}
           </div>
 
           {config.badgeFooterNote && (
@@ -333,7 +335,7 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
             >
               <Gamepad2 className="w-4 h-4" />
               <span>
-                {activeAttendee.playedArcade ? 'Volver a jugar Arcade' : 'Ir a jugar Arcade'}
+                {activeAttendee.playedArcade ? 'Mejorar mi puntaje Arcade' : 'Ir a jugar Arcade'}
               </span>
             </button>
           </div>
@@ -344,10 +346,10 @@ export const CertificateAndPassModule: React.FC<CertificateAndPassModuleProps> =
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
               <h3 className="text-lg font-bold text-white">
-                Tu Diploma Personalizado
+                Tu Diploma de Participación
               </h3>
               <p className="text-xs text-slate-400">
-                Si el organizador te asigna un premio en la Tómbola Admin, tu diploma y credencial se actualizan al instante.
+                Descarga tu diploma en alta resolución (PNG) con tu nombre, rol y puntaje del reto Arcade.
               </p>
             </div>
 

@@ -41,6 +41,11 @@ service cloud.firestore {
           'badgeAccentColor',
           'badgeFooterNote',
           'whatsappTemplate',
+          'pdfShowQr',
+          'pdfShowRoleOrg',
+          'pdfShowScore',
+          'pdfShowPrize',
+          'pdfAutoDownloadOnCheckIn',
           'updatedAt'
         ]) &&
         data.keys().hasOnly([
@@ -52,6 +57,11 @@ service cloud.firestore {
           'badgeAccentColor',
           'badgeFooterNote',
           'whatsappTemplate',
+          'pdfShowQr',
+          'pdfShowRoleOrg',
+          'pdfShowScore',
+          'pdfShowPrize',
+          'pdfAutoDownloadOnCheckIn',
           'updatedAt'
         ]) &&
         data.eventName is string && data.eventName.size() >= 2 && data.eventName.size() <= 120 &&
@@ -62,6 +72,11 @@ service cloud.firestore {
         data.badgeAccentColor is string && data.badgeAccentColor.size() >= 4 && data.badgeAccentColor.size() <= 20 &&
         data.badgeFooterNote is string && data.badgeFooterNote.size() <= 160 &&
         data.whatsappTemplate is string && data.whatsappTemplate.size() >= 5 && data.whatsappTemplate.size() <= 500 &&
+        data.pdfShowQr is bool &&
+        data.pdfShowRoleOrg is bool &&
+        data.pdfShowScore is bool &&
+        data.pdfShowPrize is bool &&
+        data.pdfAutoDownloadOnCheckIn is bool &&
         data.updatedAt is timestamp && data.updatedAt == request.time;
     }
 
@@ -208,7 +223,7 @@ service cloud.firestore {
             incoming().prizeWon == existing().prizeWon &&
             incoming().diff(existing()).affectedKeys().hasOnly(['arcadeScore', 'maxCombo', 'playedArcade', 'updatedAt'])
           ) ||
-          // Action 2: Admin assigns prize from Tombola or updates attendee
+          // Action 2: Admin assigns/revokes prize from Tombola or updates attendee
           (
             isAdmin() &&
             incoming().diff(existing()).affectedKeys().hasOnly(['prizeWon', 'arcadeScore', 'maxCombo', 'playedArcade', 'updatedAt'])

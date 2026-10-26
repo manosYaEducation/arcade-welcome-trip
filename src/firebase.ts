@@ -116,10 +116,15 @@ export async function saveEventConfigToFirestore(cfg: EventConfig) {
       whatsappTemplate:
         (
           cfg.whatsappTemplate ||
-          '¡Hola {nombre}! Aquí tienes tu credencial de {evento}.'
+          '¡Hola {nombre}! Aquí tienes tu credencial oficial de *{evento}* ({rol}). Puntaje Arcade: *{puntaje} pts*.'
         )
           .trim()
           .slice(0, 500),
+      pdfShowQr: Boolean(cfg.pdfShowQr),
+      pdfShowRoleOrg: Boolean(cfg.pdfShowRoleOrg),
+      pdfShowScore: Boolean(cfg.pdfShowScore),
+      pdfShowPrize: Boolean(cfg.pdfShowPrize),
+      pdfAutoDownloadOnCheckIn: Boolean(cfg.pdfAutoDownloadOnCheckIn),
       updatedAt: serverTimestamp(),
     });
   } catch (error) {

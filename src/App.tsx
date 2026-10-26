@@ -10,7 +10,6 @@ import {
   ArrowRight,
   Trophy,
   MessageSquareHeart,
-  Plus,
   Trash2,
   Lock,
   Unlock,
@@ -42,6 +41,7 @@ import {
 import {
   DEFAULT_EVENT_CONFIG,
   decryptBackupWithPassword,
+  downloadSingleCredentialPdf,
   encryptBackupWithPassword,
   retroAudio,
 } from './services/soundAndCrypto';
@@ -104,8 +104,12 @@ export default function App() {
 
   // Lista real de asistentes (sincronizada con Firestore cuando está autenticado)
   const [rawAttendees, setRawAttendees] = useState<Attendee[]>([]);
-  const [contactPhonesMap, setContactPhonesMap] = useState<Record<string, string>>({});
-  const [historySessions, setHistorySessions] = useState<EventHistorySession[]>([]);
+  const [contactPhonesMap, setContactPhonesMap] = useState<
+    Record<string, string>
+  >({});
+  const [historySessions, setHistorySessions] = useState<EventHistorySession[]>(
+    []
+  );
   const [currentAttendeeId, setCurrentAttendeeId] = useState<string>('');
 
   // Formulario de Registro (Modo Asistente)
@@ -117,8 +121,6 @@ export default function App() {
   const [formError, setFormError] = useState<string>('');
 
   // Estados exclusivos del Modo Admin
-  const [newPrizeLabel, setNewPrizeLabel] = useState<string>('');
-  const [newPrizeStock, setNewPrizeStock] = useState<number>(10);
   const [csvImportText, setCsvImportText] = useState<string>('');
   const [backupPassword, setBackupPassword] = useState<string>('');
   const [encryptedPkg, setEncryptedPkg] =
@@ -134,7 +136,7 @@ export default function App() {
     Boolean(firebaseUser?.emailVerified) &&
     firebaseUser?.email === ADMIN_EMAIL;
 
-  // Fusionar los teléfonos de contacto privados (cuando están disponibles) con la lista de asistentes
+  // Fusionar los teléfonos de contacto privados con la lista de asistentes
   const attendees: Attendee[] = useMemo(() => {
     return rawAttendees.map((att) => ({
       ...att,
@@ -178,6 +180,26 @@ export default function App() {
             badgeAccentColor: data.badgeAccentColor || prev.badgeAccentColor,
             badgeFooterNote: data.badgeFooterNote ?? prev.badgeFooterNote,
             whatsappTemplate: data.whatsappTemplate || prev.whatsappTemplate,
+            pdfShowQr:
+              typeof data.pdfShowQr === 'boolean'
+                ? data.pdfShowQr
+                : prev.pdfShowQr,
+            pdfShowRoleOrg:
+              typeof data.pdfShowRoleOrg === 'boolean'
+                ? data.pdfShowRoleOrg
+                : prev.pdfShowRoleOrg,
+            pdfShowScore:
+              typeof data.pdfShowScore === 'boolean'
+                ? data.pdfShowScore
+                : prev.pdfShowScore,
+            pdfShowPrize:
+              typeof data.pdfShowPrize === 'boolean'
+                ? data.pdfShowPrize
+                : prev.pdfShowPrize,
+            pdfAutoDownloadOnCheckIn:
+              typeof data.pdfAutoDownloadOnCheckIn === 'boolean'
+                ? data.pdfAutoDownloadOnCheckIn
+                : prev.pdfAutoDownloadOnCheckIn,
           }));
         }
       },
@@ -268,11 +290,12 @@ export default function App() {
           });
           setContactPhonesMap((prev) => ({ ...prev, ...nextMap }));
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'attendeeContacts')
+        (err) =>
+          handleFirestoreError(err, OperationType.LIST, 'attendeeContacts')
       );
 
       unsubHistory = onSnapshot(
-        collection(db, 'eventHistory'),
+        query(collection(db, 'eventHistory'), where('attendeeCount', '>=', 0)),
         (snap) => {
           const loadedHistory: EventHistorySession[] = snap.docs
             .map((d) => {
@@ -295,8 +318,11 @@ export default function App() {
         (err) => handleFirestoreError(err, OperationType.LIST, 'eventHistory')
       );
     } else {
-      // Si es un asistente normal, escuchar su propio contacto /attendeeContacts/att_{uid}
-      const ownContactRef = doc(db, 'attendeeContacts', `att_${firebaseUser.uid}`);
+      const ownContactRef = doc(
+        db,
+        'attendeeContacts',
+        `att_${firebaseUser.uid}`
+      );
       unsubContacts = onSnapshot(
         ownContactRef,
         (snap) => {
@@ -346,7 +372,7 @@ export default function App() {
     }
   };
 
-  // Paso 1 (Asistente): Registrarse y guardar en Firestore (si está conectado) + memoria
+  // Paso 1 (Asistente): Registrarse y guardar en Firestore + memoria (y auto-descargar PDF si está activado)
   const handleCheckInSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = nameInput.trim();
@@ -364,7 +390,7 @@ export default function App() {
       ? `att_${firebaseUser.uid}`
       : `user_${Date.now()}`;
 
-    const cleanPhone = phoneInput.trim().slice(0, 40);
+    const cleanPhone = phoneInput.trim().slice(0, 30);
 
     const newPerson: Attendee = {
       id: attendeeId,
@@ -393,6 +419,10 @@ export default function App() {
         newPerson,
         ...prev.filter((a) => a.id !== newPerson.id),
       ]);
+    }
+
+    if (config.pdfAutoDownloadOnCheckIn) {
+      downloadSingleCredentialPdf(newPerson, config);
     }
 
     setCurrentAttendeeId(newPerson.id);
@@ -460,10 +490,85 @@ export default function App() {
     }
   };
 
-  // Exclusivo Admin: Actualizar configuración de credenciales / plantilla WhatsApp
-  const handleUpdateConfigAndPersist = async (nextConfig: EventConfig) => {
-    setConfig(nextConfig);
+  // Exclusivo Admin: Quitar premio ("Al agua / Re-sortear") y devolver +1 al stock
+  const handleAdminRevokePrize = async (
+    attendeeId: string,
+    prizeLabel: string
+  ) => {
+    setRawAttendees((prev) =>
+      prev.map((a) => (a.id === attendeeId ? { ...a, prizeWon: undefined } : a))
+    );
+
+    const matchedPrize = config.prizes.find((p) => p.label === prizeLabel);
+    if (matchedPrize) {
+      const nextStock = matchedPrize.stock + 1;
+      setConfig((prev) => ({
+        ...prev,
+        prizes: prev.prizes.map((p) =>
+          p.id === matchedPrize.id ? { ...p, stock: nextStock } : p
+        ),
+      }));
+      if (firebaseUser && isFirebaseAdmin) {
+        await savePrizeToFirestore({ ...matchedPrize, stock: nextStock });
+      }
+    }
+
     if (firebaseUser && isFirebaseAdmin) {
+      await assignPrizeInFirestoreAdmin(attendeeId, '');
+    }
+  };
+
+  // Exclusivo Admin: Administrar premios y stock directamente desde la Tómbola
+  const handleAdminAddPrize = async (label: string, stock: number) => {
+    const palette = ['#06B6D4', '#F59E0B', '#10B981', '#6366F1', '#EC4899'];
+    const nextPrize: PrizeTier = {
+      id: `prize_${Date.now()}`,
+      label: label.slice(0, 80),
+      stock: Math.max(1, stock),
+      color: palette[config.prizes.length % palette.length],
+    };
+    setConfig((prev) => ({
+      ...prev,
+      prizes: [...prev.prizes, nextPrize],
+    }));
+    if (firebaseUser && isFirebaseAdmin) {
+      await savePrizeToFirestore(nextPrize);
+    }
+  };
+
+  const handleAdminUpdatePrizeStock = async (
+    prizeId: string,
+    nextStock: number
+  ) => {
+    const target = config.prizes.find((p) => p.id === prizeId);
+    if (!target) return;
+    const updated = { ...target, stock: Math.max(0, nextStock) };
+    setConfig((prev) => ({
+      ...prev,
+      prizes: prev.prizes.map((p) => (p.id === prizeId ? updated : p)),
+    }));
+    if (firebaseUser && isFirebaseAdmin) {
+      await savePrizeToFirestore(updated);
+    }
+  };
+
+  const handleAdminDeletePrize = async (prizeId: string) => {
+    setConfig((prev) => ({
+      ...prev,
+      prizes: prev.prizes.filter((p) => p.id !== prizeId),
+    }));
+    if (firebaseUser && isFirebaseAdmin) {
+      await deletePrizeFromFirestore(prizeId);
+    }
+  };
+
+  // Exclusivo Admin: Actualizar configuración de credenciales / plantilla WhatsApp
+  const handleUpdateConfigAndPersist = async (
+    nextConfig: EventConfig,
+    persistToCloud?: boolean
+  ) => {
+    setConfig(nextConfig);
+    if (persistToCloud && firebaseUser && isFirebaseAdmin) {
       await saveEventConfigToFirestore(nextConfig);
     }
   };
@@ -473,7 +578,7 @@ export default function App() {
     attendeeId: string,
     phone: string
   ) => {
-    const clean = phone.trim().slice(0, 40);
+    const clean = phone.trim().slice(0, 30);
     setContactPhonesMap((prev) => ({
       ...prev,
       [attendeeId]: clean,
@@ -483,8 +588,74 @@ export default function App() {
     );
 
     if (firebaseUser && clean) {
-      await saveAttendeeContactPhone(attendeeId, clean, firebaseUser.uid);
+      await saveAttendeeContactPhone(attendeeId, firebaseUser.uid, clean);
     }
+  };
+
+  // Exclusivo Admin: Cargar 3 asistentes de prueba con 1 clic para evaluar el flujo completo
+  const handleLoadSampleTestAttendees = async () => {
+    const nowTime = new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    const samples: Attendee[] = [
+      {
+        id: `sample_${Date.now()}_1`,
+        name: 'Camila Rojas',
+        role: 'Diseño / UX',
+        organization: 'Studio Austral',
+        wordForCloud: 'Creatividad',
+        checkedInAt: nowTime,
+        arcadeScore: 2850,
+        maxCombo: 4,
+        playedArcade: true,
+        phone: '+56987654321',
+      },
+      {
+        id: `sample_${Date.now()}_2`,
+        name: 'Mateo Valdés',
+        role: 'Desarrollo / Ingeniería',
+        organization: 'Andes Cloud',
+        wordForCloud: 'Innovación',
+        checkedInAt: nowTime,
+        arcadeScore: 3420,
+        maxCombo: 5,
+        playedArcade: true,
+        phone: '+56911223344',
+      },
+      {
+        id: `sample_${Date.now()}_3`,
+        name: 'Valentina Soto',
+        role: 'Producto / Negocios',
+        organization: 'Fintech Sur',
+        wordForCloud: 'Comunidad',
+        checkedInAt: nowTime,
+        arcadeScore: 1980,
+        maxCombo: 3,
+        playedArcade: true,
+        phone: '+56955667788',
+      },
+    ];
+
+    const phoneMapUpdates: Record<string, string> = {};
+    samples.forEach((s) => {
+      if (s.phone) phoneMapUpdates[s.id] = s.phone;
+    });
+    setContactPhonesMap((prev) => ({ ...prev, ...phoneMapUpdates }));
+
+    if (firebaseUser) {
+      for (const att of samples) {
+        await createAttendeeInFirestore(att, firebaseUser.uid);
+      }
+    } else {
+      setRawAttendees((prev) => [...samples, ...prev]);
+    }
+
+    if (!currentAttendeeId && samples[0]) {
+      setCurrentAttendeeId(samples[0].id);
+    }
+    retroAudio.playCheckInSuccess();
   };
 
   // Exclusivo Admin: Guardar sesión lista en Histórico y limpiar la sesión activa
@@ -498,7 +669,9 @@ export default function App() {
       timeStyle: 'short',
     });
 
-    const prizesAwardedCount = attendees.filter((a) => Boolean(a.prizeWon)).length;
+    const prizesAwardedCount = attendees.filter((a) =>
+      Boolean(a.prizeWon)
+    ).length;
     const summaryItems = attendees.slice(0, 60).map((a) => ({
       name: a.name,
       role: a.role,
@@ -636,7 +809,7 @@ export default function App() {
         role: (parts[1] || 'Invitado General').slice(0, 80),
         organization: (parts[2] || '').slice(0, 100),
         wordForCloud: (parts[3] || 'Comunidad').slice(0, 60),
-        phone: parts[4] ? parts[4].slice(0, 40) : undefined,
+        phone: parts[4] ? parts[4].slice(0, 30) : undefined,
         checkedInAt: nowTime,
         arcadeScore: 0,
         maxCombo: 1,
@@ -781,7 +954,7 @@ export default function App() {
                   : ''
               }`}
             >
-              Ruleta / Tómbola
+              1. Tómbola y Premios
             </button>
             <button
               type="button"
@@ -792,7 +965,7 @@ export default function App() {
                   : ''
               }`}
             >
-              Credenciales PDF y WhatsApp
+              2. PDF Automático, WhatsApp e Histórico
             </button>
             <button
               type="button"
@@ -803,7 +976,7 @@ export default function App() {
                   : ''
               }`}
             >
-              Pantalla en Vivo ({attendees.length})
+              3. Pantalla en Vivo ({attendees.length})
             </button>
             <button
               type="button"
@@ -814,7 +987,7 @@ export default function App() {
                   : ''
               }`}
             >
-              Ajustes y Respaldo
+              4. Ajustes y Respaldo
             </button>
           </nav>
         )}
@@ -842,18 +1015,18 @@ export default function App() {
             className={`min-h-[40px] px-3.5 py-1.5 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
               roleMode === 'admin'
                 ? 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'
-                : 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40'
+                : 'bg-slate-900 hover:bg-slate-800 text-amber-300 border border-slate-700'
             }`}
           >
             {roleMode === 'admin' ? (
               <>
                 <Smartphone className="w-4 h-4" />
-                <span>Vista Asistente</span>
+                <span>Volver a Vista Asistente</span>
               </>
             ) : (
               <>
-                <ShieldCheck className="w-4 h-4" />
-                <span>Panel Admin ({attendees.length})</span>
+                <ShieldCheck className="w-4 h-4 text-amber-400" />
+                <span>Organizador ({attendees.length})</span>
               </>
             )}
           </button>
@@ -916,10 +1089,10 @@ export default function App() {
             <span className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
               <ShieldCheck className="w-4 h-4" />
               <span>
-                MODO ADMINISTRADOR{' '}
+                PANEL DEL ORGANIZADOR{' '}
                 {isFirebaseAdmin
                   ? '(AUTENTICADO EN FIREBASE)'
-                  : '(INICIA SESIÓN CON TU CUENTA ADMIN PARA GUARDAR EN LA NUBE)'}
+                  : '(MODO PRUEBA LOCAL / CONÉCTATE CON TU CUENTA ADMIN PARA GUARDAR EN NUBE)'}
               </span>
             </span>
 
@@ -934,7 +1107,7 @@ export default function App() {
                 }`}
               >
                 <Gift className="w-3.5 h-3.5" />
-                <span>1. Girar Tómbola</span>
+                <span>1. Tómbola y Premios</span>
               </button>
 
               <button
@@ -947,7 +1120,7 @@ export default function App() {
                 }`}
               >
                 <FileText className="w-3.5 h-3.5" />
-                <span>2. Credenciales PDF, WhatsApp e Histórico</span>
+                <span>2. PDF Automático, WhatsApp e Histórico</span>
               </button>
 
               <button
@@ -997,7 +1170,7 @@ export default function App() {
                     ¡Bienvenido/a a {config.eventName}!
                   </h1>
                   <p className="text-xs sm:text-sm text-slate-300 mt-1">
-                    Regístrate en segundos para jugar el reto arcade con el giroscopio de tu celular y obtener tu pase digital.
+                    Regístrate en segundos para jugar el reto arcade con el giroscopio de tu celular y obtener tu credencial digital.
                   </p>
                 </div>
 
@@ -1057,7 +1230,7 @@ export default function App() {
                     <label className="block text-xs font-semibold text-slate-200 mb-1.5 flex items-center gap-1.5">
                       <Phone className="w-3.5 h-3.5 text-emerald-400" />
                       <span>
-                        WhatsApp / Teléfono (Opcional — si quieres recibir tu credencial por WhatsApp)
+                        WhatsApp / Teléfono (Opcional — para enviarte tu credencial)
                       </span>
                     </label>
                     <input
@@ -1124,7 +1297,6 @@ export default function App() {
                 config={config}
                 attendees={attendees}
                 currentAttendeeId={currentAttendeeId}
-                onSelectAttendee={setCurrentAttendeeId}
                 onGoToRegister={() => setAttendeeTab('register')}
                 onGoToArcade={() => setAttendeeTab('game')}
               />
@@ -1140,6 +1312,10 @@ export default function App() {
                 config={config}
                 attendees={attendees}
                 onAssignPrizeToAttendee={handleAdminAssignPrize}
+                onRevokePrizeFromAttendee={handleAdminRevokePrize}
+                onAddPrize={handleAdminAddPrize}
+                onUpdatePrizeStock={handleAdminUpdatePrizeStock}
+                onDeletePrize={handleAdminDeletePrize}
               />
             )}
 
@@ -1152,6 +1328,7 @@ export default function App() {
                 onUpdateAttendeePhone={handleAdminUpdateAttendeePhone}
                 onArchiveAndClearSession={handleArchiveAndClearSession}
                 onDeleteHistorySession={handleDeleteHistorySession}
+                onLoadSampleTestAttendees={handleLoadSampleTestAttendees}
               />
             )}
 
@@ -1255,15 +1432,15 @@ export default function App() {
               <div className="space-y-6">
                 <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6">
                   <h2 className="text-2xl font-bold text-white">
-                    Configuración del Evento (Firestore), CSV y Respaldo Cifrado
+                    Datos del Evento, Importación CSV y Respaldo Cifrado
                   </h2>
                   <p className="text-sm text-slate-400 mt-1">
-                    Personaliza el evento en tiempo real, administra el stock de premios de la tómbola, importa invitados o exporta el cierre cifrado AES-GCM.
+                    Configura el nombre, salón y duración del juego, importa listas de invitados por CSV o exporta el respaldo cifrado AES-GCM.
                   </p>
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-                  {/* Datos del Evento y Premios */}
+                  {/* Datos Generales del Evento */}
                   <div className="lg:col-span-6 space-y-6">
                     <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 space-y-4">
                       <h3 className="text-base font-bold text-white">
@@ -1339,110 +1516,9 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 space-y-4">
-                      <h3 className="text-base font-bold text-white">
-                        2. Premios de la Tómbola ({config.prizes.length})
-                      </h3>
-
-                      <div className="space-y-2">
-                        {config.prizes.map((p) => (
-                          <div
-                            key={p.id}
-                            className="p-3 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between gap-2 text-xs"
-                          >
-                            <div className="flex items-center gap-2.5">
-                              <span
-                                className="w-3 h-3 rounded-full shrink-0"
-                                style={{ backgroundColor: p.color }}
-                              />
-                              <span className="font-semibold text-white">
-                                {p.label}
-                              </span>
-                              <span className="text-slate-400">
-                                ({p.stock} disp.)
-                              </span>
-                            </div>
-                            {config.prizes.length > 2 && (
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  setConfig({
-                                    ...config,
-                                    prizes: config.prizes.filter(
-                                      (item) => item.id !== p.id
-                                    ),
-                                  });
-                                  if (isFirebaseAdmin) {
-                                    await deletePrizeFromFirestore(p.id);
-                                  }
-                                }}
-                                className="text-rose-400 hover:text-rose-300 cursor-pointer"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-
-                      <div className="flex items-center gap-2 pt-2">
-                        <input
-                          type="text"
-                          value={newPrizeLabel}
-                          onChange={(e) => setNewPrizeLabel(e.target.value)}
-                          placeholder="Nuevo premio..."
-                          className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
-                        />
-                        <input
-                          type="number"
-                          min={1}
-                          value={newPrizeStock}
-                          onChange={(e) =>
-                            setNewPrizeStock(Number(e.target.value) || 5)
-                          }
-                          className="w-20 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
-                        />
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            if (!newPrizeLabel.trim()) return;
-                            const palette = [
-                              '#06B6D4',
-                              '#F59E0B',
-                              '#10B981',
-                              '#6366F1',
-                              '#EC4899',
-                            ];
-                            const nextPrize: PrizeTier = {
-                              id: `prize_${Date.now()}`,
-                              label: newPrizeLabel.trim().slice(0, 80),
-                              stock: newPrizeStock,
-                              color:
-                                palette[config.prizes.length % palette.length],
-                            };
-                            setConfig({
-                              ...config,
-                              prizes: [...config.prizes, nextPrize],
-                            });
-                            setNewPrizeLabel('');
-                            if (isFirebaseAdmin) {
-                              await savePrizeToFirestore(nextPrize);
-                            }
-                          }}
-                          className="px-3.5 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs rounded-xl flex items-center gap-1 cursor-pointer"
-                        >
-                          <Plus className="w-4 h-4" />
-                          <span>Agregar</span>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Importar CSV y Cierre Cifrado */}
-                  <div className="lg:col-span-6 space-y-6">
                     <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 space-y-3">
                       <h3 className="text-base font-bold text-white">
-                        3. Importar Invitados (Luma / CSV)
+                        2. Importar Invitados (Luma / CSV)
                       </h3>
                       <p className="text-xs text-slate-400">
                         Formato por línea:{' '}
@@ -1459,19 +1535,33 @@ export default function App() {
                         }
                         className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-xs font-mono text-white"
                       />
-                      <button
-                        type="button"
-                        onClick={handleImportCsvGuests}
-                        className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-medium text-xs rounded-xl border border-slate-700 flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                        <span>Importar Invitados</span>
-                      </button>
-                    </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={handleImportCsvGuests}
+                          className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-medium text-xs rounded-xl border border-slate-700 flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>Importar CSV</span>
+                        </button>
 
+                        <button
+                          type="button"
+                          onClick={handleLoadSampleTestAttendees}
+                          className="px-4 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-semibold text-xs rounded-xl border border-cyan-500/40 flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" />
+                          <span>Cargar 3 Asistentes de Prueba</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Respaldo Cifrado AES-GCM y Limpieza */}
+                  <div className="lg:col-span-6 space-y-6">
                     <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 space-y-4">
                       <h3 className="text-base font-bold text-white">
-                        4. Respaldo Cifrado AES-GCM y Limpieza
+                        3. Respaldo Cifrado AES-GCM y Limpieza
                       </h3>
                       <p className="text-xs text-slate-400">
                         Cifra los datos de los {attendees.length} participantes con tu contraseña antes de limpiar la base de datos.

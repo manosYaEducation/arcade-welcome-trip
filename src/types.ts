@@ -19,6 +19,11 @@ export interface EventConfig {
   badgeAccentColor: string;
   badgeFooterNote: string;
   whatsappTemplate: string;
+  pdfShowQr: boolean;
+  pdfShowRoleOrg: boolean;
+  pdfShowScore: boolean;
+  pdfShowPrize: boolean;
+  pdfAutoDownloadOnCheckIn: boolean;
   prizes: PrizeTier[];
 }
 

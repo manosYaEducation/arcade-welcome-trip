@@ -310,6 +310,7 @@ export function generateDeterministicQrMatrix(payload: string): boolean[][] {
 
 /**
  * Renderiza en un Canvas HTML5 una Credencial Personalizada lista para PDF o PNG
+ * Respeta las opciones automáticas configuradas por el Admin (sin ruido de Tómbola por defecto)
  */
 export function renderCredentialCardToCanvas(
   canvas: HTMLCanvasElement,
@@ -336,106 +337,131 @@ export function renderCredentialCardToCanvas(
   ctx.lineWidth = 3;
   ctx.strokeRect(24, 34, W - 48, H - 58);
 
-  // Encabezado personalizado (badgeTitle + eventName)
+  // Encabezado personalizado (badgeTitle + eventName + subtitle)
   ctx.fillStyle = accent;
-  ctx.font = '700 16px "JetBrains Mono", monospace';
+  ctx.font = '700 15px "JetBrains Mono", monospace';
   ctx.textAlign = 'center';
   ctx.fillText(
-    (config.badgeTitle || 'CREDENCIAL OFICIAL DE ASISTENTE').toUpperCase(),
+    (config.badgeTitle || 'CREDENCIAL OFICIAL DE ACCESO').toUpperCase(),
     W / 2,
-    82
+    78
   );
 
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '700 34px "Outfit", sans-serif';
-  ctx.fillText(config.eventName, W / 2, 126);
+  ctx.font = '700 32px "Outfit", sans-serif';
+  ctx.fillText(config.eventName.slice(0, 32), W / 2, 118);
 
   ctx.fillStyle = '#94A3B8';
-  ctx.font = '500 16px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(`${config.venue} ·Ingreso: ${attendee.checkedInAt}`, W / 2, 158);
+  ctx.font = '500 15px "Plus Jakarta Sans", sans-serif';
+  const venueLine = config.subtitle
+    ? `${config.subtitle.slice(0, 38)} · ${config.venue}`
+    : `${config.venue} · Ingreso: ${attendee.checkedInAt}`;
+  ctx.fillText(venueLine, W / 2, 148);
 
-  // Código QR central
-  const payload = `PASE:${attendee.name}|ROL:${attendee.role}|PTS:${attendee.arcadeScore}`;
-  const matrix = generateDeterministicQrMatrix(payload);
-  const qrCell = 7;
-  const qrSize = matrix.length * qrCell + 24;
-  const qrX = Math.floor((W - qrSize) / 2);
-  const qrY = 186;
+  let currentY = 178;
 
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fillRect(qrX, qrY, qrSize, qrSize);
-  ctx.fillStyle = '#090D16';
-  for (let r = 0; r < matrix.length; r++) {
-    for (let c = 0; c < matrix.length; c++) {
-      if (matrix[r][c]) {
-        ctx.fillRect(
-          qrX + 12 + c * qrCell,
-          qrY + 12 + r * qrCell,
-          qrCell,
-          qrCell
-        );
+  // Código QR central (si pdfShowQr está activo)
+  if (config.pdfShowQr !== false) {
+    const payload = `PASE:${attendee.name}|ROL:${attendee.role}|HORA:${attendee.checkedInAt}`;
+    const matrix = generateDeterministicQrMatrix(payload);
+    const qrCell = 7;
+    const qrSize = matrix.length * qrCell + 24;
+    const qrX = Math.floor((W - qrSize) / 2);
+    const qrY = currentY;
+
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(qrX, qrY, qrSize, qrSize);
+    ctx.fillStyle = '#090D16';
+    for (let r = 0; r < matrix.length; r++) {
+      for (let c = 0; c < matrix.length; c++) {
+        if (matrix[r][c]) {
+          ctx.fillRect(
+            qrX + 12 + c * qrCell,
+            qrY + 12 + r * qrCell,
+            qrCell,
+            qrCell
+          );
+        }
       }
     }
+    currentY = qrY + qrSize + 52;
+  } else {
+    currentY = 250;
   }
 
-  // Nombre y Rol del Participante
-  const nameY = qrY + qrSize + 54;
+  // Nombre del Participante
   ctx.fillStyle = '#FFFFFF';
   ctx.font = '700 38px "Outfit", sans-serif';
-  ctx.fillText(attendee.name.slice(0, 28), W / 2, nameY);
+  ctx.fillText(attendee.name.slice(0, 28), W / 2, currentY);
 
-  ctx.fillStyle = accent;
-  ctx.font = '600 20px "Plus Jakarta Sans", sans-serif';
-  const roleOrg = attendee.organization
-    ? `${attendee.role} · ${attendee.organization}`
-    : attendee.role;
-  ctx.fillText(roleOrg.slice(0, 42), W / 2, nameY + 34);
+  // Rol e Institución (si pdfShowRoleOrg está activo)
+  if (config.pdfShowRoleOrg !== false) {
+    ctx.fillStyle = accent;
+    ctx.font = '600 20px "Plus Jakarta Sans", sans-serif';
+    const roleOrg = attendee.organization
+      ? `${attendee.role} · ${attendee.organization}`
+      : attendee.role;
+    ctx.fillText(roleOrg.slice(0, 42), W / 2, currentY + 34);
+  }
 
-  // Tarjetas de Puntaje y Premio
-  const boxY = nameY + 62;
-  const boxW = (W - 120) / 2;
+  // Bloques inferiores configurables (Palabra Aportada, Puntaje Arcade opcional, Premio opcional)
+  const boxes: { title: string; value: string; borderColor: string; valueColor: string }[] = [
+    {
+      title: 'PALABRA CLAVE',
+      value: (attendee.wordForCloud || 'Bienvenida').slice(0, 20),
+      borderColor: '#10B981',
+      valueColor: '#FFFFFF',
+    },
+  ];
+
+  if (config.pdfShowScore !== false) {
+    boxes.push({
+      title: 'PUNTAJE ARCADE',
+      value: `${attendee.arcadeScore.toLocaleString()} PTS`,
+      borderColor: accent,
+      valueColor: '#FFFFFF',
+    });
+  }
+
+  if (config.pdfShowPrize === true && attendee.prizeWon) {
+    boxes.push({
+      title: 'PREMIO ASIGNADO',
+      value: attendee.prizeWon.slice(0, 20),
+      borderColor: '#F59E0B',
+      valueColor: '#F59E0B',
+    });
+  }
+
+  const boxY = currentY + 64;
+  const count = boxes.length;
+  const gap = 18;
+  const totalMargin = 96;
+  const boxW = Math.floor((W - totalMargin - gap * (count - 1)) / count);
   const boxH = 88;
+  const startX = Math.floor((W - (boxW * count + gap * (count - 1))) / 2);
 
-  // Caja 1: Puntaje Arcade
-  ctx.fillStyle = '#0F172A';
-  ctx.fillRect(48, boxY, boxW, boxH);
-  ctx.strokeStyle = accent;
-  ctx.lineWidth = 1.5;
-  ctx.strokeRect(48, boxY, boxW, boxH);
+  boxes.forEach((b, idx) => {
+    const x = startX + idx * (boxW + gap);
+    ctx.fillStyle = '#0F172A';
+    ctx.fillRect(x, boxY, boxW, boxH);
+    ctx.strokeStyle = b.borderColor;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x, boxY, boxW, boxH);
 
-  ctx.fillStyle = '#94A3B8';
-  ctx.font = '600 12px "JetBrains Mono", monospace';
-  ctx.fillText('PUNTAJE ARCADE', 48 + boxW / 2, boxY + 30);
-  ctx.fillStyle = '#FFFFFF';
-  ctx.font = '700 22px "JetBrains Mono", monospace';
-  ctx.fillText(
-    `${attendee.arcadeScore.toLocaleString()} PTS`,
-    48 + boxW / 2,
-    boxY + 62
-  );
+    ctx.fillStyle = '#94A3B8';
+    ctx.font = '600 12px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(b.title, x + boxW / 2, boxY + 30);
 
-  // Caja 2: Premio Tómbola
-  const box2X = 72 + boxW;
-  ctx.fillStyle = '#0F172A';
-  ctx.fillRect(box2X, boxY, boxW, boxH);
-  ctx.strokeStyle = '#F59E0B';
-  ctx.lineWidth = 1.5;
-  ctx.strokeRect(box2X, boxY, boxW, boxH);
-
-  ctx.fillStyle = '#94A3B8';
-  ctx.font = '600 12px "JetBrains Mono", monospace';
-  ctx.fillText('PREMIO TÓMBOLA', box2X + boxW / 2, boxY + 30);
-  ctx.fillStyle = '#F59E0B';
-  ctx.font = '700 18px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(
-    (attendee.prizeWon || 'En sorteo').slice(0, 20),
-    box2X + boxW / 2,
-    boxY + 62
-  );
+    ctx.fillStyle = b.valueColor;
+    ctx.font = '700 20px "Plus Jakarta Sans", sans-serif';
+    ctx.fillText(b.value, x + boxW / 2, boxY + 62);
+  });
 
   // Nota al pie personalizada
   ctx.fillStyle = '#94A3B8';
   ctx.font = '500 14px "Plus Jakarta Sans", sans-serif';
+  ctx.textAlign = 'center';
   ctx.fillText(
     config.badgeFooterNote || 'Gracias por ser parte de esta experiencia',
     W / 2,
@@ -509,8 +535,43 @@ export function downloadAllCredentialsBatchPdf(
   pdf.save(`Credenciales_Lote_${cleanEvent}.pdf`);
 }
 
+export interface HistorySummaryItem {
+  name: string;
+  role: string;
+  score: number;
+  prize: string;
+}
+
+export function parseHistoryAttendeesSummary(
+  rawSummary: string
+): HistorySummaryItem[] {
+  if (!rawSummary) return [];
+  try {
+    const parsed = JSON.parse(rawSummary);
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => ({
+        name: String(item.name || 'Participante'),
+        role: String(item.role || 'Invitado'),
+        score: Number(item.score ?? 0),
+        prize: String(item.prize || ''),
+      }));
+    }
+  } catch {
+    // Fallback para resúmenes guardados como texto plano
+  }
+  return rawSummary
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => ({
+      name: line,
+      role: '',
+      score: 0,
+      prize: '',
+    }));
+}
+
 /**
- * Descarga un PDF de resumen de una sesión guardada en Histórico
+ * Descarga un PDF de resumen de una sesión guardada en Histórico con tabla legible
  */
 export function downloadHistorySessionPdf(session: EventHistorySession) {
   const pdf = new jsPDF({
@@ -520,26 +581,49 @@ export function downloadHistorySessionPdf(session: EventHistorySession) {
   });
 
   pdf.setFontSize(18);
-  pdf.text(`Reporte Histórico: ${session.eventName}`, 16, 22);
+  pdf.text(`Reporte Oficial de Sesión: ${session.eventName}`, 16, 20);
 
   pdf.setFontSize(11);
-  pdf.text(`Lugar: ${session.venue}`, 16, 32);
-  pdf.text(`Fecha de cierre: ${session.closedAt}`, 16, 39);
+  pdf.text(`Lugar / Salón: ${session.venue}`, 16, 30);
+  pdf.text(`Fecha de Cierre: ${session.closedAt}`, 16, 37);
   pdf.text(
-    `Total Asistentes: ${session.attendeeCount} | Récord Arcade: ${session.topScore} pts (${session.topPlayerName}) | Premios: ${session.prizesAwardedCount}`,
+    `Total Asistentes: ${session.attendeeCount}  |  Récord Arcade: ${session.topScore.toLocaleString()} pts (${session.topPlayerName || 'N/A'})  |  Premios Tómbola: ${session.prizesAwardedCount}`,
     16,
-    46
+    44
   );
+
+  pdf.setDrawColor(180);
+  pdf.line(16, 49, 194, 49);
+
+  const items = parseHistoryAttendeesSummary(session.attendeesSummary);
 
   pdf.setFontSize(10);
-  const lines = pdf.splitTextToSize(
-    session.attendeesSummary || 'Sin participantes detallados.',
-    178
-  );
-  pdf.text(lines, 16, 58);
+  let y = 57;
+  pdf.text('#   Participante                    Perfil / Área              Puntaje     Premio Tómbola', 16, y);
+  y += 3;
+  pdf.line(16, y, 194, y);
+  y += 6;
+
+  if (items.length === 0) {
+    pdf.text('Sin detalle de participantes en esta sesión.', 16, y);
+  } else {
+    items.forEach((item, idx) => {
+      if (y > 275) {
+        pdf.addPage();
+        y = 20;
+      }
+      const num = String(idx + 1).padEnd(3, ' ');
+      const nameCol = item.name.slice(0, 28).padEnd(30, ' ');
+      const roleCol = item.role.slice(0, 24).padEnd(26, ' ');
+      const scoreCol = `${item.score.toLocaleString()} pts`.padEnd(11, ' ');
+      const prizeCol = item.prize ? item.prize.slice(0, 22) : '-';
+      pdf.text(`${num} ${nameCol} ${roleCol} ${scoreCol} ${prizeCol}`, 16, y);
+      y += 6.5;
+    });
+  }
 
   const cleanName = session.eventName.replace(/[^a-zA-Z0-9_-]/g, '_');
-  pdf.save(`Historico_${cleanName}_${session.id.slice(-5)}.pdf`);
+  pdf.save(`Acta_Sesion_${cleanName}_${session.id.slice(-5)}.pdf`);
 }
 
 /**
@@ -553,14 +637,14 @@ export function buildWhatsAppCredentialUrl(
   const digits = phoneRaw.replace(/[^0-9]/g, '');
   const template =
     config.whatsappTemplate ||
-    '¡Hola {nombre}! Aquí tienes tu credencial oficial de {evento}. Tu puntaje Arcade: {puntaje} pts | Premio: {premio}.';
+    '¡Hola {nombre}! Aquí tienes tu credencial oficial de *{evento}* ({rol}). Tu puntaje en el reto Arcade: *{puntaje} pts*.';
 
   const message = template
     .replace(/\{nombre\}/gi, attendee.name)
     .replace(/\{evento\}/gi, config.eventName)
     .replace(/\{rol\}/gi, attendee.role)
     .replace(/\{puntaje\}/gi, attendee.arcadeScore.toLocaleString())
-    .replace(/\{premio\}/gi, attendee.prizeWon || 'Participando en sorteo');
+    .replace(/\{premio\}/gi, attendee.prizeWon || 'Acreditado');
 
   const encoded = encodeURIComponent(message);
   return digits
@@ -577,7 +661,12 @@ export const DEFAULT_EVENT_CONFIG: EventConfig = {
   badgeAccentColor: '#06B6D4',
   badgeFooterNote: 'Gracias por ser parte de nuestro evento',
   whatsappTemplate:
-    '¡Hola {nombre}! Te compartimos tu credencial de *{evento}* ({rol}). Puntaje en el reto Arcade: *{puntaje} pts* | Premio Tómbola: *{premio}*.',
+    '¡Hola {nombre}! Te compartimos tu credencial oficial de *{evento}* ({rol}). Puntaje en el reto Arcade: *{puntaje} pts*.',
+  pdfShowQr: true,
+  pdfShowRoleOrg: true,
+  pdfShowScore: true,
+  pdfShowPrize: false,
+  pdfAutoDownloadOnCheckIn: false,
   prizes: [
     { id: 'p-1', label: 'Café de Especialidad', stock: 15, color: '#06B6D4' },
     { id: 'p-2', label: 'Pack de Stickers Retro', stock: 25, color: '#F59E0B' },
